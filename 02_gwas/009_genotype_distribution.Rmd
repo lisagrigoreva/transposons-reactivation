@@ -1,0 +1,212 @@
+---
+title: "genotype_check"
+output: html_document
+date: "2025-02-21"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+
+```{r}
+library(vcfR)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+phenotype <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/221_acc_superfamilies_blups_per_te/associations_exploring/expression_per_superfamily.csv", sep=" ", header=T)
+
+#raw_expression <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/221_acc_superfamilies_blups_per_te/associations_exploring/raw_expression_per.csv", header=T)
+# Genotype
+vcf <- read.vcfR("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/221_acc_superfamilies_blups_per_te/associations_exploring/chr5_7193242_ltr_copia_ddm1.vcf")
+
+# Extract genotypes
+gt <- extract.gt(vcf, element = "GT")
+
+# Convert to dataframe
+snp_data <- data.frame(
+  accession = colnames(gt),
+  genotype = as.vector(gt[1, ])  # First (and only) SNP
+) %>%
+  mutate(
+    # Convert genotype to numeric (0/0 = 0, 0/1 = 1, 1/1 = 2)
+    genotype_numeric = case_when(
+      genotype == "0/0" ~ 0,
+      genotype == "0/1" ~ 1,
+      genotype == "1/0" ~ 1,
+      genotype == "1/1" ~ 2,
+      genotype == "./." ~ NA_real_,
+      TRUE ~ NA_real_
+    ),
+    # Convert to factor for plotting
+    genotype_factor = factor(genotype_numeric, 
+                            levels = c(0, 1, 2,3),
+                            labels = c("Ref/Ref", "Ref/Alt", "Alt/Alt","NA"))
+  )
+
+# View
+head(snp_data)
+```
+## Get phenotype 
+```{r}
+snp_data$accession<-as.numeric(snp_data$accession)
+snp_data_with_phenotype <-inner_join(snp_data,phenotype,by=c("accession"))
+
+```
+
+
+
+```{r}
+snp_data_with_phenotype <-snp_data_with_phenotype[snp_data_with_phenotype$Transposon_Super_Family=="LTR/Copia",]
+ggplot(snp_data_with_phenotype %>% filter(!is.na(genotype_factor), !is.na(ddm1_log2_expr)), 
+       aes(x = genotype_factor, y = ddm1_log2_expr, fill = genotype_factor)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+  scale_fill_manual(values = c("Ref/Ref" = "#9BC09C", "Alt/Alt" = "#C5172E", "Ref/Alt"="blue")) +
+  stat_compare_means(method = "wilcox.test", 
+                     comparisons = list(c("Ref/Ref", "Alt/Alt")),
+                     label = "p.format",  # Shows p = 0.001
+                     bracket.size = 0.6,
+                     size = 5) +
+  theme_minimal(base_size = 15) +
+  labs(title = "F1 ddm1 chr5_7193242", x = "Genotype", y = "F1 ddm1 log2expr", fill = "Genotype")
+```
+
+## Variance explained of the phenotype by the SNP 
+```{r}
+# ANOVA approach
+anova_result <- aov(ddm1_log2_expr ~ genotype_factor, data = snp_data_with_phenotype)
+summary(anova_result)
+
+SS_genotype <- 0.394
+SS_residual <- 6.976
+SS_total <- SS_genotype + SS_residual
+
+R_squared <- SS_genotype / SS_total
+cat("Variance explained (R²):", round(R_squared * 100, 2), "%\n")
+```
+
+```{r}
+# Code genotypes numerically (0, 1, 2 for alt allele count)
+snp_data_with_phenotype$genotype_numeric <- ifelse(snp_data_with_phenotype$genotype_factor == "Ref/Ref", 0,
+                                                     ifelse(snp_data_with_phenotype$genotype_factor == "Ref/Alt", 1, 2))
+
+# Additive model
+additive_model <- lm(ddm1_log2_expr ~ genotype_numeric, data = snp_data_with_phenotype)
+summary(additive_model)
+
+# Beta coefficient = effect per alt allele
+coef(additive_model)["genotype_numeric"]
+confint(additive_model)["genotype_numeric", ]  # ALT allele decreases ddm1 expression 
+```
+
+```{r}
+## Get alt allele genotypes
+snp_data_with_phenotype_alt <-snp_data_with_phenotype[snp_data_with_phenotype$genotype=="1/1",] %>% na.omit()
+
+```
+
+## Connect to the raw expression as well
+```{r}
+raw_expression_avg <- raw_expression %>% group_by(Transposon_Super_Family, accession,genotype)%>% summarise(mean_expr=mean(expression_value), mean_transformed=mean(transformed))
+
+# Calculate differences
+expr_diff <- raw_expression_avg %>%
+  pivot_wider(
+    id_cols = c(Transposon_Super_Family, accession),
+    names_from = genotype,
+    values_from = c(mean_expr, mean_transformed)
+  ) %>%
+  mutate(
+    diff_expr = mean_expr_ddm1 - mean_expr_Col,
+    diff_transformed = mean_transformed_ddm1 - mean_transformed_Col
+  )
+
+# View result
+head(expr_diff)
+```
+
+```{r}
+expr_diff_with_raw <- inner_join(expr_diff,snp_data_with_phenotype, by=c("accession") )
+
+
+expr_diff_with_raw %>% 
+  filter(Transposon_Super_Family == "DNA/En-Spm", !is.na(genotype_factor), !is.na(diff_transformed)) %>%
+  ggplot(aes(x = genotype_factor, y = diff_transformed, fill = genotype_factor)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+  scale_fill_manual(values = c("Ref/Ref" = "#9BC09C", "Alt/Alt" = "#C5172E")) +
+  stat_compare_means(method = "wilcox.test", 
+                     comparisons = list(c("Ref/Ref", "Alt/Alt")),
+                     label = "p.format",
+                     bracket.size = 0.6,
+                     size = 5) +
+  theme_minimal(base_size = 15) +
+  labs(title = "F1 ddm1 raw - F1 Col raw", 
+       x = "Genotype", 
+       y = "F1 ddm1 raw - F1 Col raw", 
+       fill = "Genotype")
+```
+
+###OLD
+```
+## Add phenotype to genotype and check distribution
+```{r}
+phenotype_gen <- inner_join(phenotype_sum,gen, by=c("sample"="V1"))
+#phenotype_gen$rep1 <- as.factor(phenotype_gen$rep1)
+#phenotype_gen$rep2 <- as.factor(phenotype_gen$rep2)
+#phenotype_gen$rep3 <- as.factor(phenotype_gen$rep3)
+#phenotype_gen$rep4 <- as.factor(phenotype_gen$rep4)
+#phenotype_gen$blups <- as.factor(phenotype_gen$blups)
+
+phenotype_long <- phenotype_gen %>%
+  pivot_longer(
+    cols = c(rep1, rep2, rep3, rep4,blups),
+    names_to = "Replicate",
+    values_to = "Value"
+  )
+```
+
+
+```{r}
+phenotype_long$Replicate <- as.factor(phenotype_long$Replicate)
+```
+
+
+```{r}
+library(ggpubr)
+# Perform Wilcoxon test for each replicate
+phenotype_long <- na.omit(phenotype_long)
+phenotype_long$Value <- as.numeric(phenotype_long$Value)
+wilcox_results <- phenotype_long %>%
+  group_by(Replicate) %>%
+  dplyr::summarise(
+    p_value = wilcox.test(Value ~ V2)$p.value
+  )
+
+# Print results
+print(wilcox_results)
+
+
+phenotype_long$Replicate <- factor(phenotype_long$Replicate,
+                                 levels = c("rep1", "rep2", "rep3", "rep4","blups"),
+                                 labels = c("rep1", "rep2", "rep3", "average", "blups"))
+
+
+# Create the plot with renamed facet
+phenotype_long$V2 <- as.factor(phenotype_long$V2)
+ggplot(phenotype_long, aes(x=V2, y=Value, fill=V2)) + 
+    geom_boxplot(notch=F, alpha=0.3,outlier.shape = NA) +
+    geom_jitter(aes(color=V2), alpha=0.8, width=0.2) +
+    facet_wrap(~Replicate, scales="free_y", ncol=5) +
+    stat_compare_means(method = "wilcox.test",
+                      comparisons = list(c("0", "1")),
+                      label = "p.signif") +
+    theme_bw(base_size = 15) +
+    scale_fill_brewer(palette = "Set2") +
+    scale_color_brewer(palette = "Set2") +
+    labs(x="Allele", y="Expression", fill="Allele", color="Allele")+scale_fill_discrete(labels = c("Col0", "Alternative")) +
+scale_color_discrete(labels = c("Col0", "Alternative"))
+```
+
+
+

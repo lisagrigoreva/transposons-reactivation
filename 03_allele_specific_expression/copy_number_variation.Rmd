@@ -1,0 +1,240 @@
+---
+title: "copy_number_variation_analysis"
+output: html_document
+date: "2025-07-08"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+## Read accessions 
+```{r}
+expression <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/long_data_step5_wide.csv")
+## Get only expression in col0 
+expression_col0 <- expression %>% 
+    group_by(TE) %>% 
+    #filter(genotype=="Col") %>%
+    ungroup() %>%
+    group_by(TE)
+    #filter(n_distinct(accession) == n_distinct(long_data_step5_wide$accession))
+```
+## Read SNP 
+```{r}
+snp_for_boxplot <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/all_tes_families_gwas_blups/VANDAL11/ATCOPIA32B_vandal11.txt")
+colnames(snp_for_boxplot)<- c("accession", "snp")
+
+#Add expression
+snp_for_boxplot <- inner_join(expression_col0,snp_for_boxplot, by=("accession"))
+
+library(dplyr)
+library(ggplot2)
+
+# df is your data frame
+# Keep only Col and ddm1 if that’s what you want
+library(dplyr)
+library(ggplot2)
+
+df_plot <- snp_for_boxplot %>%
+  filter(genotype %in% c("Col", "ddm1")) %>%     # keep only Col vs ddm1
+  filter(snp %in% c("0/0", "1/1")) %>%           # keep only the two SNP classes
+  mutate(
+    genotype = factor(genotype, levels = c("Col", "ddm1")),
+    snp = factor(snp, levels = c("0/0", "1/1"))
+  )
+
+ggplot(df_plot, aes(x = genotype, y = expression_value, fill = genotype)) +
+  geom_boxplot(outlier.shape = 16, outlier.size = 1.8, width = 0.7) +
+  #geom_jitter(aes(color = genotype), width = 0.15, alpha = 0.5, size = 1.5) +
+  facet_wrap(~ snp, nrow = 1) +
+  scale_fill_manual(values = c("Col" = "#4575b4", "ddm1" = "#d73027")) +
+  scale_color_manual(values = c("Col" = "#4575b4", "ddm1" = "#d73027")) +
+  labs(
+    x = NULL,
+    y = "Expression value",
+    title = "Expression by genotype, faceted by SNP"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "grey90"),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+## Read copynumber variation for accessions
+```{r}
+# List all .cnt files in the folder
+cnt_files <- list.files(
+  path = "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pannagram/simsearch_out",
+  pattern = "\\.cnt$",
+  full.names = TRUE
+)
+
+for (file in cnt_files) {
+  df <- read.table(
+    file,
+    sep = "\t",
+    header = TRUE,
+    check.names = FALSE,
+    row.names = 1
+  )
+  
+  # Extract accession from the first column name
+  first_col <- colnames(df)[1]
+  accession_id <- sub(".*_(\\d+)", "\\1", first_col)
+  
+  # Rename the 'total' column to include the accession ID
+  colnames(df)[colnames(df) == "total"] <- paste0("total_", accession_id)
+  
+  # Add accession column
+  df$accession <- accession_id
+  
+  # Output filename
+  new_filename <- sub("\\.cnt$", "_with_accession.cnt", file)
+  
+  write.table(df, new_filename, sep = "\t", row.names = TRUE, quote = FALSE)
+}
+
+
+```
+### Add ID column
+```{bash}
+for file in *scaffolds_85_85_with_accession.cnt; do
+  awk -F'\t' 'BEGIN{OFS="\t"} NR==1 {print "ID_cleaned", $0; next} {split($1, a, "|"); print a[1], $0}' "$file" > tmp && mv tmp "$file"
+done
+
+## Extract only 1st and 7th column from every file 
+for file in *scaffolds_85_85_with_accession.cnt; do
+  cut -f 1,6 "$file" > tmp && mv tmp "$file"
+done
+```
+## Read files and merge them 
+```{r}
+# List relevant files
+files <- list.files(
+  path = "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pannagram/simsearch_out",
+  pattern = "scaffolds_85_85_with_accession.cleaned\\.cnt$",
+  full.names = TRUE
+)
+
+
+# Read files, extract columns 1 and 6
+cnt_list <- lapply(files, function(f) {
+  df <- read.table(f, header = TRUE) 
+  colnames(df) <- c("ID", f)  # Rename for merging
+  return(df)
+})
+
+# Merge all by 'ID' (inner join, keeps only shared IDs)
+merged_df <- Reduce(function(x, y) merge(x, y, by = "ID_cleaned"), cnt_list)
+merged_df$Chr5_100584 <- NULL
+```
+## Keep all IDs
+```{r}
+library(dplyr)
+library(readr)
+library(purrr)
+library(stringr)
+
+files <- list.files(
+  path = "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pannagram/simsearch_out",
+  pattern = "scaffolds_85_85_with_accession.cleaned\\.cnt$",
+  full.names = TRUE
+)
+
+# Helper to read and standardize each file
+read_cnt <- function(f) {
+  df <- read.table(f, header = TRUE, sep = "", stringsAsFactors = FALSE, check.names = FALSE)
+  # Expect a column with ID. If it's called "ID_cleaned", use it; adjust if needed.
+  stopifnot("ID_cleaned" %in% names(df))
+  # Keep only ID and the value column you need. Here I assume column 6 is the value.
+  # If you truly want col 1 and 6: change 'value = df[[6]]' accordingly, and ensure ID_cleaned is col 1.
+  tibble(
+    ID_cleaned = df[["ID_cleaned"]],
+    value = df[[6]]
+  ) |>
+    distinct() |>
+    mutate(source = basename(f))
+}
+
+cnt_list <- map(files, read_cnt)
+
+# Convert to wide format with one column per file
+merged_df <- cnt_list |>
+  list_rbind() |>
+  mutate(source = str_remove(source, "\\.cnt$")) |>
+  tidyr::pivot_wider(
+    id_cols = ID_cleaned,
+    names_from = source,
+    values_from = value
+  ) |>
+  arrange(ID_cleaned)
+
+# Optionally drop a specific column if present
+merged_df$Chr5_100584 <- NULL
+
+merged_df_selected <-merged_df[merged_df$ID_cleaned=="AT4TE10165",]
+```
+
+## Change ids to the accession names according to the file
+```{r}
+real_accession_names <- read.table("/groups/nordborg/projects/ddm1_resilencing/01_data/full_genomes/unique_columns_output_tair10_6909.txt")
+colnames(real_accession_names) <- c("id", "accession")
+
+
+old_cols <- colnames(merged_df)[-1]
+
+# Extract the numeric part after "total_"
+ids <- sub("total_", "", old_cols)
+
+# Match those IDs with accession numbers
+accessions <- real_accession_names$accession[match(ids, real_accession_names$id)]
+
+# Create new colnames with accession instead of IDs
+new_cols <- paste0("total_", accessions)
+
+# Assign new colnames back, keeping first col as is
+colnames(merged_df) <- c(colnames(merged_df)[1], new_cols)
+
+# Check
+head(merged_df)
+```
+##connect to the expression values
+```{r}
+long_df <- merged_df %>%
+  pivot_longer(
+    cols = starts_with("total_"),
+    names_to = "accession",
+    values_to = "cnv"
+  ) %>%
+  mutate(accession = sub("total_", "", accession)) %>%  # remove prefix
+  rename(TE = ID_cleaned)
+
+head(long_df)
+long_df$accession <- as.numeric(long_df$accession)
+merged_df_with_expresssion <- inner_join(long_df,expression_col0,by=c("TE","accession"))
+
+## Select one TE 
+merged_df_with_expresssion2 <- merged_df_with_expresssion[merged_df_with_expresssion$TE=="AT4TE10165",]
+
+ggplot(merged_df_with_expresssion_one_sampl, aes(x = cnv, y = Col)) +
+  geom_point() +
+  facet_wrap(~ accession~plate, scales = "free_x")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,477 @@
+---
+title: "008_create_genotype_mat_expressed_tes"
+output: html_document
+date: "2025-11-21"
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+```
+## Read table 
+```{r}
+expression <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/expression_matrix_maternally_biased_tes_morethan07intair10_log205_acc_col.csv")
+```
+## Remove close to the tair10 accessions
+```{r}
+close_acc <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/core_files/close_accession.csv", sep=";", header = T)
+close_acc_names <-close_accessions$acc
+
+# Filter OUT close accessions (keep only distant ones)
+expression_cleaned <- expression %>% 
+  filter(!Accession %in% close_acc_names)
+```
+## Create phenotype for GWAS 
+```{r}
+##Remove TE which are close to the gene 
+overlapping_tes <- read.csv("/groups/nordborg/projects/ddm1_resilencing/04_output/te_filtering_overlap/filtered_atleast1bp_overalp_with_gene_id_list.csv")
+
+expression_cleaned_tes <- expression %>% 
+  filter(!ID %in% overlapping_tes$x)
+
+## Calculate how many TEs per ddm1 and Col we have 
+# Count unique TEs per variant
+tes_per_variant <- expression_cleaned_tes %>%
+  group_by(Variant) %>%
+  summarise(
+    n_TEs = n_distinct(ID),
+    .groups = "drop"
+  )
+
+tes_per_variant
+```
+##Visualize a heatmap 
+```{r}
+## Plot heatmap 
+heatmap_data <- expression_cleaned_tes_maternal_filtered %>% 
+  mutate(sample_genome = paste(Sample_id, genome, sep = "_")) %>%
+  dplyr::select(ID, sample_genome, log2_TPM) %>%
+  pivot_wider(names_from = sample_genome, values_from = log2_TPM, values_fill = 0) %>%
+  column_to_rownames("ID") %>%
+  as.matrix()
+
+# Create annotation with sorted order
+col_annotation <- expression_cleaned_tes_maternal_filtered %>% 
+  mutate(sample_genome = paste(Sample_id, genome, sep = "_")) %>%
+  dplyr::select(sample_genome, Genotype, Variant, genome) %>%
+  distinct() %>%
+  arrange(genome == "accession", Variant == "ddm1") %>%  # Sort: tair10 first, then Col first
+  column_to_rownames("sample_genome")
+
+# Reorder heatmap data to match
+heatmap_data <- heatmap_data[, rownames(col_annotation)]
+
+# Define colors
+# Create annotation with sorted order - first by Genotype, then by genome
+col_annotation <- expression_cleaned_tes_maternal_filtered %>%
+    mutate(sample_genome = paste(Sample_id, genome, sep = "_")) %>%
+    dplyr::select(sample_genome, Genotype, Variant, genome) %>%
+    distinct() %>%
+    arrange(Genotype, genome == "accession") %>%  # Sort: Genotype first, then tair10 before accession
+    column_to_rownames("sample_genome")
+
+# Reorder heatmap data to match
+heatmap_data <- heatmap_data[, rownames(col_annotation)]
+
+genome_colors <- c("accession" = "#E41A1C", "tair10" = "#377EB8")
+genotype_colors <- c("F1_Col" = "#66C2A5", "F1_ddm1" = "#E62727", "ct_col" = "#5D866C", "ddm1_ct" = "#FFD93D")
+
+# Create top annotation - genotype first (top), then genome (bottom)
+col_ha <- HeatmapAnnotation(
+    genotype = col_annotation$Genotype,
+    'Mapped haplotype' = col_annotation$genome,
+    col = list(
+        genotype = genotype_colors,
+        'Mapped haplotype' = genome_colors
+    ),
+    annotation_name_gp = gpar(fontsize = 10)
+)
+
+# Create heatmap
+ht <- Heatmap(
+    heatmap_data,
+    name = "log2(TPM+1)",
+    top_annotation = col_ha,
+    show_row_names = FALSE,
+    show_column_names = FALSE,
+    cluster_rows = TRUE,
+    cluster_columns = FALSE,
+    clustering_distance_rows = "euclidean",
+    clustering_method_rows = "complete",
+    row_km_repeats = 1000,
+    show_row_dend = FALSE,
+    show_column_dend = FALSE,
+    column_title = "Samples",
+    row_title = "TE",
+    column_title_side = "bottom",
+    row_title_side = "left",
+    column_title_gp = gpar(fontsize = 12),
+    row_title_gp = gpar(fontsize = 12),
+    heatmap_legend_param = list(
+        title = "log2(TPM+1)",
+        direction = "vertical",
+        legend_height = unit(4, "cm")
+    )
+)
+
+draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+```
+## Calculate heritability per TE 
+```{r}
+sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_phenotype_preprocessed_based_on_pca_with_selfers_v2.csv",header=T)
+sampledata <- sampledata %>% dplyr::select(Sample_id,Accession,Variant,Genotype,Replicate)
+# Join with reads
+reshaped_data_with_sampleinfo <- left_join(expression_cleaned_tes,sampledata, by=c("Sample_id"="Sample_id", "Accession", "Variant", "Genotype"))
+## Get only maternal genome 
+expression_cleaned_tes_maternal <-reshaped_data_with_sampleinfo[reshaped_data_with_sampleinfo$genome=="tair10",]
+## Create acc var
+expression_cleaned_tes_maternal$acc_var <- paste(expression_cleaned_tes_maternal$Accession,expression_cleaned_tes_maternal$Variant, sep="_")
+
+## Get TEs with problematic structure
+# Check your data structure
+expression_cleaned_tes_maternal %>%
+  filter(Variant %in% c("Col", "ddm1")) %>%
+  group_by(ID, Variant) %>%
+  summarise(
+    n_obs = n(),
+    n_accessions = n_distinct(acc_var),
+    n_replicates = n_distinct(Replicate),
+    .groups = "drop"
+  ) %>%
+  arrange(n_obs)
+
+
+
+# Identify TEs with sufficient data in BOTH variants
+tes_to_keep <- expression_cleaned_tes_maternal %>%
+  filter(Variant %in% c("Col", "ddm1")) %>%
+  group_by(ID, Variant) %>%
+  summarise(
+    n_obs = n(),
+    n_accessions = n_distinct(acc_var),
+    n_replicates = n_distinct(Replicate),
+    .groups = "drop"
+  ) %>%
+  # Keep only TEs where BOTH variants have sufficient data
+  filter(
+    n_obs > n_accessions,      # More observations than accessions
+    n_replicates >= 2          # At least 2 replicates
+  ) %>%
+  group_by(ID) %>%
+  filter(n() == 2) %>%          # Must be present in both variants
+  pull(ID) %>%
+  unique()
+
+
+expression_cleaned_tes_maternal_filtered <- expression_cleaned_tes_maternal %>%
+  filter(ID %in% tes_to_keep)
+
+## At least 2 replicates within each condition
+
+# Identify accessions with >=2 replicates per variant
+accessions_to_keep <- expression_cleaned_tes_maternal_filtered %>%
+  group_by(Accession, Variant) %>%
+  dplyr::summarise(n_replicates = n_distinct(Replicate), .groups = "drop") %>%
+  filter(n_replicates >= 2) %>%
+  group_by(Accession) %>%
+  filter(n() == 2) %>%  # Must have >=2 replicates in BOTH variants
+  pull(Accession) %>%
+  unique()
+
+# Filter the dataframe
+expression_cleaned_tes_maternal_filtered <- expression_cleaned_tes_maternal_filtered %>%
+  filter(Accession %in% accessions_to_keep)
+
+# Check results
+cat("Accessions kept:", length(accessions_to_keep), "\n")
+cat("Total rows:", nrow(expression_cleaned_tes_maternal_filtered), "\n")
+
+
+```
+
+
+```{r}
+
+## Calculate heritability 
+heritability <- expression_cleaned_tes_maternal_filtered %>%
+  filter(Variant %in% c("Col", "ddm1")) %>%
+  group_by(ID, Variant) %>% # Group by both TE and genotype
+  group_map(~ {
+    df <- .x
+    te_id <- .y$ID
+    geno_id <- .y$Variant
+    model <- lmer(log2_TPM ~ (1|acc_var) + (1|Replicate), data = df)
+    varcomp <- as.data.frame(VarCorr(model))
+    var_acc <- varcomp$vcov[varcomp$grp == "acc_var"]
+    var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+    var_resid <- varcomp$vcov[varcomp$grp == "Residual"]
+    h2 <- var_acc / (var_acc + var_replicate + var_resid)
+    resids <- residuals(model)
+    tibble(
+      TE = te_id,
+      genotype = geno_id,
+      heritability = h2,
+      var_acc = var_acc,
+      var_replicate = var_replicate,
+      var_resid = var_resid,
+      residuals = resids
+    )
+  }) %>%
+  bind_rows()
+
+## Plot highly heritable TEs
+family_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+long_data_step5_filtered_with_annotation <- inner_join(long_data_step5,family_annotation, by=c("TE"="Transposon_Name"))
+
+heritability_with_family <- inner_join(family_annotation,heritability, by=c("Transposon_Name"="TE"))
+  
+ggplot(heritability, aes(x = heritability, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Heritability per TE", x = "Heritability", y = "Count") + 
+  facet_wrap(~genotype)
+
+## Residuals distribution 
+ggplot(heritability, aes(x = residuals, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Residuals from heritability", x = "Heritability", y = "Count") + 
+  facet_wrap(~genotype)
+```
+
+
+```{r}
+heritability_with_family_ordered <- heritability_with_family[order(genotype, Transposon_Super_Family, -heritability)]
+
+heritability_with_family_ordered <- heritability_with_family %>%
+  group_by(genotype, Transposon_Super_Family) %>%
+  arrange(genotype, Transposon_Super_Family, desc(heritability)) %>%
+  mutate(Transposon_Name_ord = factor(Transposon_Name, 
+                                     levels = unique(Transposon_Name))) %>%
+  ungroup()
+
+# Create a unique identifier for each TE within each facet group
+heritability_with_family_ordered <- heritability_with_family %>%
+  arrange(genotype, Transposon_Super_Family, desc(heritability)) %>%
+  group_by(genotype, Transposon_Super_Family) %>%
+  mutate(
+    facet_id = paste(genotype, Transposon_Super_Family, sep = "_"),
+    te_with_facet = paste(Transposon_Name, facet_id, sep = "___"),
+    order_within_facet = row_number()
+  ) %>%
+  ungroup() %>%
+  mutate(
+    te_with_facet_ord = reorder(te_with_facet, -order_within_facet)
+  )
+
+# Plot with custom y-axis labels
+heritability_with_family_ordered %>%
+  ggplot(aes(x = heritability, y = te_with_facet_ord)) +
+  geom_point() + 
+  facet_wrap(~ genotype + Transposon_Super_Family, nrow = 2, scales = "free") +
+  labs(x = "Heritability", y = "") + 
+  theme_minimal(base_size = 15) +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+## Calculate BLUPs for each accession, each TE
+```{r}
+library(lme4)
+library(dplyr)
+library(ggplot2)
+
+heritability_blups <- expression_cleaned_tes_maternal_filtered %>%
+  filter(Variant %in% c("Col", "ddm1")) %>%
+  group_by(ID, Variant) %>%
+  group_map(~ {
+    df <- .x
+    te_id <- .y$ID
+    geno_id <- .y$Variant
+    
+    # Fit mixed model
+    model <- lmer(log2_TPM ~ (1|acc_var) + (1|Replicate), data = df)
+    
+    # Extract variance components
+    varcomp <- as.data.frame(VarCorr(model))
+    var_acc <- varcomp$vcov[varcomp$grp == "acc_var"]
+    var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+    var_resid <- varcomp$vcov[varcomp$grp == "Residual"]
+    
+    # Calculate heritability
+    h2 <- var_acc / (var_acc + var_replicate + var_resid)
+    # Extract BLUPs
+    blups <- ranef(model)$acc_var
+    fixed_effect <- fixef(model)
+    # Get accession mapping
+    acc_mapping <- df %>% select(acc_var, Accession) %>% distinct()
+    # Create output
+    tibble(
+      acc_var = rownames(blups),
+      BLUP = blups[, 1],
+      predicted_log2_TPM = blups[, 1] + fixed_effect
+    ) %>%
+      left_join(acc_mapping, by = "acc_var") %>%
+      mutate(
+        TE = te_id,
+        genotype = geno_id,
+        heritability = h2,
+        var_acc = var_acc,
+        var_replicate = var_replicate,
+        var_resid = var_resid
+      )
+  }) %>%
+  bind_rows()
+
+# Check the output
+head(heritability_blups)
+```
+
+## Fitted VS residuals 
+```{r}
+# Extract fitted values and residuals
+residual_check <- expression_cleaned_tes_maternal_filtered %>%
+  filter(Variant %in% c("Col", "ddm1")) %>%
+  group_by(ID, Variant) %>%
+  group_map(~ {
+    df <- .x
+    model <- lmer(log2_TPM ~ (1|acc_var) + (1|Replicate), data = df)
+    
+    df %>%
+      mutate(
+        fitted = fitted(model),
+        residual = residuals(model),
+        TE = .y$ID,
+        genotype = .y$Variant
+      )
+  }) %>%
+  bind_rows()
+
+# Plot fitted vs residuals
+residual_check %>%
+  filter(genotype == "ddm1") %>%
+  ggplot(aes(fitted, residual)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  facet_wrap(~TE, scales = "free") +
+  labs(
+    x = "Fitted values",
+    y = "Residuals",
+    title = "Fitted vs Residuals - Should NOT show patterns"
+  ) +
+  theme_bw()
+```
+
+```{r}
+# Calculate observed means per accession
+observed_means <- expression_cleaned_tes_maternal_filtered %>%
+  filter(Variant %in% c("Col", "ddm1")) %>%
+  group_by(ID, Variant, acc_var, Accession) %>%
+  summarise(
+    mean_log2_TPM = mean(log2_TPM, na.rm = TRUE),
+    n_obs = n(),
+    .groups = "drop"
+  )
+
+# Join BLUPs with observed means
+comparison <- heritability_blups %>%
+  left_join(observed_means, 
+            by = c("TE" = "ID", "genotype" = "Variant", "acc_var", "Accession"))
+
+# Plot: BLUPs vs observed means
+comparison %>%
+  ggplot(aes(mean_log2_TPM, predicted_log2_TPM, color = n_obs)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_viridis_c() +
+  facet_wrap(~genotype) +
+  labs(
+    x = "Observed mean log2(TPM)",
+    y = "BLUP predicted log2(TPM)",
+    title = "BLUPs vs Observed Means",
+    subtitle = "Points should be near diagonal; more shrinkage with fewer observations",
+    color = "# obs"
+  ) +
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+# Calculate correlation
+comparison %>%
+  group_by(genotype) %>%
+  summarise(
+    correlation = cor(mean_log2_TPM, predicted_log2_TPM, use = "complete.obs"),
+    .groups = "drop"
+  )
+```
+## Create phenotype for GWAS
+```{r}
+gwas_individual_tes <- heritability_blups %>% select(BLUP,Accession,TE,genotype, heritability)
+## Create a genotype for Col and ddm1 
+gwas_individual_tes_wide <- gwas_individual_tes %>%
+  select(Accession, TE, genotype, BLUP,heritability) %>%
+  pivot_wider(
+    names_from = genotype,
+    values_from = c(BLUP, heritability),
+    names_prefix = ""
+  )
+
+head(gwas_individual_tes_wide)
+## Filter low heritabilty TE 
+
+filtered_by_heritability <- gwas_individual_tes_wide[gwas_individual_tes_wide$heritability_Col>=0.1 | gwas_individual_tes_wide$heritability_ddm1>=0.1,]
+
+# Count TEs per variant
+filtered_by_heritability %>%
+  summarise(
+    n_TEs_Col = sum(!is.na(BLUP_Col)),
+    n_TEs_ddm1 = sum(!is.na(BLUP_ddm1)),
+    n_unique_TEs_Col = n_distinct(TE[!is.na(BLUP_Col)]),
+    n_unique_TEs_ddm1 = n_distinct(TE[!is.na(BLUP_ddm1)])
+  )
+
+blups_wide <- filtered_by_heritability
+```
+## Write GWAS dataframe 
+```{r}
+## Make accession numeric 
+blups_wide$Accession <- as.numeric(blups_wide$Accession)
+## Remove accessions from Tom's list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_wide[!blups_wide$Accession %in% accessions_not_distingquished$V1, ]
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+## Form final df 
+long_df_final <- long_df_final %>% dplyr::select(null1,Accession,null2,null3,null4,BLUP_Col,BLUP_ddm1,TE)
+# Loop through each TE and write to its own folder
+unique_TEs <- unique(long_df_final$TE)
+## Indicate path 
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/maternally_expressed_tes_61_longread_acc/ind_tes"
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(te == TE) %>%
+    dplyr::select(null1, Accession, null2, null3, null4,BLUP_Col,BLUP_ddm1)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+
+
+
+
+
+

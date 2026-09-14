@@ -1,0 +1,413 @@
+---
+title: "006_gene_expression_phenotype_correlation"
+output: html_document
+date: "2026-04-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+sense_expression_genes <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/sense_expr_te_genes_no_filter_reads_log2cpm_normalization.csv.gz", sep=",")
+```
+## Select only genes 
+```{r}
+sense_expression_only_genes <- sense_expression_genes %>%
+  filter(!grepl("TE", id))
+# Filter controls. 
+sense_expression_only_genes_ddm1 <- sense_expression_only_genes[sense_expression_only_genes$Genotype=="F1_ddm1",]
+sense_expression_only_genes_Col <- sense_expression_only_genes[sense_expression_only_genes$Genotype=="F1_Col" |sense_expression_only_genes$Genotype=="ct_col" ,]
+```
+
+```{r}
+# Compute BLUPs per gene per accession
+library(data.table)
+sense_expression_only_genes_ddm1$log2cpm <- as.numeric(sense_expression_only_genes_ddm1$log2cpm)
+
+blups_long_log2_genes <- as.data.table(sense_expression_only_genes_ddm1)[
+  , .(BLUP = mean(log2cpm, na.rm = TRUE)), 
+  by = .(id, accession)
+]
+
+blups_long_log2_genes$accession <- as.numeric(blups_long_log2_genes$accession)
+
+# Remove heterozygous accessions
+accessions_not_distinguished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+long_df_final_genes <- blups_long_log2_genes[!blups_long_log2_genes$accession %in% accessions_not_distinguished$V1, ]
+
+# Add null columns
+long_df_final_genes$null1 <- 0
+long_df_final_genes$null2 <- 0
+long_df_final_genes$null3 <- 0
+long_df_final_genes$null4 <- 0
+
+long_df_final_genes <- long_df_final_genes %>%
+  dplyr::select(null1, accession, null2, null3, null4, BLUP, id)
+
+# Order accessions
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final_genes <- long_df_final_genes[order(match(long_df_final_genes$accession, accessions$accession)), ]
+
+# Clean gene IDs for folder names (replace problematic characters)
+long_df_final_genes$id <- gsub("/", "_", long_df_final_genes$id)
+unique_genes <- unique(long_df_final_genes$id)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/ddm1"
+
+long_df_final_genes <- long_df_final_genes %>% ungroup()
+
+# Loop through each gene
+for (gene in unique_genes) {
+  gene_df <- long_df_final_genes %>%
+    dplyr::filter(id == gene) %>%
+    dplyr::select(null1, accession, null2, null3, null4, BLUP)
+  gene_dir <- file.path(base_path, gene)
+  dir.create(gene_dir, showWarnings = FALSE, recursive = TRUE)
+
+  write.table(gene_df,
+              file = file.path(gene_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+
+## Correlation between blup_overall_ddm1_average and individual gene log2
+```{r}
+library(dplyr)
+# Read the reference file (overall average)
+ref_file <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/rank_transform/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"
+
+ref_df <- read.table(ref_file, header = FALSE, sep = "\t")
+colnames(ref_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_ref")
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/f1col0/"
+
+# Get all gene folders
+gene_dirs <- list.dirs(base_path, full.names = TRUE, recursive = FALSE)
+
+# Store results
+results <- list()
+
+library(progress)
+
+pb <- progress_bar$new(
+  format = "  Processing [:bar] :current/:total (:percent) eta: :eta",
+  total = length(gene_dirs),
+  clear = FALSE,
+  width = 80
+)
+
+for (gene_dir in gene_dirs) {
+  pb$tick()
+  
+  gene <- basename(gene_dir)
+  fam_file <- file.path(gene_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam")
+  
+  if (!file.exists(fam_file)) next
+  gene_df <- read.table(fam_file, header = FALSE, sep = "\t")
+  colnames(gene_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_gene")
+  merged <- inner_join(gene_df %>% dplyr::select(accession, BLUP_gene),
+                       ref_df %>% dplyr::select(accession, BLUP_ref),
+                       by = "accession")
+  cor_test <- cor.test(merged$BLUP_gene, merged$BLUP_ref, method = "spearman")
+  results[[gene]] <- data.frame(
+    gene    = gene,
+    rho     = cor_test$estimate,
+    n       = nrow(merged)
+  )
+}
+
+# Combine and sort
+results_df <- bind_rows(results) %>%
+  arrange(rho, decreasing=T)
+
+results_df <- bind_rows(results) %>%
+  arrange(desc(rho))
+
+write.csv2(results_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/cor_genes_blup_overall_f1ddm1_rank_transformation_tes.csv", quote = F, row.names = F)
+```
+
+## Correlation between blups_ddm1_cmt2_average and individual gene
+```{r}
+library(dplyr)
+# Read the reference file (overall average)
+ref_file <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"
+
+ref_df <- read.table(ref_file, header = FALSE, sep = "\t")
+colnames(ref_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_ref")
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/f1col0"
+
+# Get all gene folders
+gene_dirs <- list.dirs(base_path, full.names = TRUE, recursive = FALSE)
+
+# Store results
+results <- list()
+
+library(progress)
+
+pb <- progress_bar$new(
+  format = "  Processing [:bar] :current/:total (:percent) eta: :eta",
+  total = length(gene_dirs),
+  clear = FALSE,
+  width = 80
+)
+
+for (gene_dir in gene_dirs) {
+  pb$tick()
+  
+  gene <- basename(gene_dir)
+  fam_file <- file.path(gene_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam")
+  
+  if (!file.exists(fam_file)) next
+  
+  gene_df <- read.table(fam_file, header = FALSE, sep = "\t")
+  colnames(gene_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_gene")
+  
+  merged <- inner_join(gene_df %>% select(accession, BLUP_gene),
+                       ref_df %>% select(accession, BLUP_ref),
+                       by = "accession")
+  
+  cor_test <- cor.test(merged$BLUP_gene, merged$BLUP_ref, method = "spearman")
+  results[[gene]] <- data.frame(
+    gene    = gene,
+    rho     = cor_test$estimate,
+    n       = nrow(merged)
+  )
+}
+
+# Combine and sort
+results_df <- bind_rows(results) %>%
+  arrange(rho, decreasing=T)
+
+results_df <- bind_rows(results) %>%
+  arrange(desc(rho))
+
+write.csv2(results_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/cor_genes_blup_overall_f1col0_cmt2_average_log2.csv", quote = F, row.names = F)
+```
+## Correlation between blups_ddm1_rddm_average and individual gene
+```{r}
+library(dplyr)
+# Read the reference file (overall average)
+ref_file <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"
+
+ref_df <- read.table(ref_file, header = FALSE, sep = "\t")
+colnames(ref_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_ref")
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/f1col0"
+
+# Get all gene folders
+gene_dirs <- list.dirs(base_path, full.names = TRUE, recursive = FALSE)
+
+# Store results
+results <- list()
+
+library(progress)
+
+pb <- progress_bar$new(
+  format = "  Processing [:bar] :current/:total (:percent) eta: :eta",
+  total = length(gene_dirs),
+  clear = FALSE,
+  width = 80
+)
+
+for (gene_dir in gene_dirs) {
+  pb$tick()
+  
+  gene <- basename(gene_dir)
+  fam_file <- file.path(gene_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam")
+  
+  if (!file.exists(fam_file)) next
+  
+  gene_df <- read.table(fam_file, header = FALSE, sep = "\t")
+  colnames(gene_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_gene")
+  
+  merged <- inner_join(gene_df %>% select(accession, BLUP_gene),
+                       ref_df %>% select(accession, BLUP_ref),
+                       by = "accession")
+  
+  cor_test <- cor.test(merged$BLUP_gene, merged$BLUP_ref, method = "spearman")
+  results[[gene]] <- data.frame(
+    gene    = gene,
+    rho     = cor_test$estimate,
+    n       = nrow(merged)
+  )
+}
+
+# Combine and sort
+results_df <- bind_rows(results) %>%
+  arrange(rho, decreasing=T)
+
+results_df <- bind_rows(results) %>%
+  arrange(desc(rho))
+
+write.csv2(results_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/cor_genes_blup_overall_f1col0_rddm_average_log2.csv", quote = F, row.names = F)
+```
+## Correlation between blups_ddm1_cdca7_average and individual gene
+```{r}
+library(dplyr)
+# Read the reference file (overall average)
+ref_file <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"
+
+ref_df <- read.table(ref_file, header = FALSE, sep = "\t")
+colnames(ref_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_ref")
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/ddm1"
+
+# Get all gene folders
+gene_dirs <- list.dirs(base_path, full.names = TRUE, recursive = FALSE)
+
+# Store results
+results <- list()
+
+library(progress)
+
+pb <- progress_bar$new(
+  format = "  Processing [:bar] :current/:total (:percent) eta: :eta",
+  total = length(gene_dirs),
+  clear = FALSE,
+  width = 80
+)
+
+for (gene_dir in gene_dirs) {
+  pb$tick()
+  
+  gene <- basename(gene_dir)
+  fam_file <- file.path(gene_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam")
+  
+  if (!file.exists(fam_file)) next
+  
+  gene_df <- read.table(fam_file, header = FALSE, sep = "\t")
+  colnames(gene_df) <- c("null1", "accession", "null2", "null3", "null4", "BLUP_gene")
+  
+  merged <- inner_join(gene_df %>% select(accession, BLUP_gene),
+                       ref_df %>% select(accession, BLUP_ref),
+                       by = "accession")
+  
+  cor_test <- cor.test(merged$BLUP_gene, merged$BLUP_ref, method = "spearman")
+  results[[gene]] <- data.frame(
+    gene    = gene,
+    rho     = cor_test$estimate,
+    n       = nrow(merged)
+  )
+}
+
+# Combine and sort
+results_df <- bind_rows(results) %>%
+  arrange(rho, decreasing=T)
+
+results_df <- bind_rows(results) %>%
+  arrange(desc(rho))
+
+write.csv2(results_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/cor_genes_blup_overall_ddm1_cdca7_average_zscale.csv", quote = F, row.names = F)
+```
+## Get chromosome 5 genes correlation
+```{r}
+```
+
+
+## What genes explain phenotype?
+```{r}
+library(data.table)
+## Read gene annotation
+gene_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff") %>% filter(V3=="gene")
+gene_annotation$V9 <- gsub('.*Name=', '', gene_annotation$V9)
+gene_annotation$V9 <- gsub(';.*', '', gene_annotation$V9)
+
+all_tes_log2 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/cor_genes_blup_overall_f1ddm1_rank_transformation_tes.csv")
+all_tes_log2_with_annotation <- inner_join(gene_annotation,all_tes_log2, by=c("V9"="gene"))
+```
+
+```{r}
+# Get genes under the peak (or speicific gene) 
+gene_rho <- all_tes_log2_with_annotation %>%
+  #filter(V4 >=796361 & V4 <=1058769 & V1=="Chr5") %>%
+  filter(V9 == "AT5G03415") %>%
+  pull(rho) %>%
+  unique()
+```
+
+## Enrichment for a priori genes
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+summary(significant_genes$tair_id %in%all_tes_log2_with_annotation$V9)
+```
+
+```{r}
+# Get rho values for significant genes
+sig_genes_rho <- all_tes_log2_with_annotation %>%
+  filter(V9 %in% significant_genes$tair_id[significant_genes$tair_id %in% all_tes_log2_with_annotation$V9]) %>%
+  distinct(V9, rho)
+
+q <- quantile(all_tes_log2_with_annotation$rho, 
+              probs = c(0.05, 0.25, 0.75, 0.95), na.rm = TRUE)
+
+ggplot(all_tes_log2_with_annotation, aes(x = rho)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = q["5%"],  linetype = "dashed", color = "firebrick", linewidth = 0.8) +
+  geom_vline(xintercept = q["95%"], linetype = "dashed", color = "firebrick", linewidth = 0.8) +
+  geom_vline(xintercept = q["25%"], linetype = "dashed", color = "grey40",    linewidth = 0.6) +
+  geom_vline(xintercept = q["75%"], linetype = "dashed", color = "grey40",    linewidth = 0.6) +
+  geom_vline(xintercept = 0,        linetype = "solid",  color = "black",     linewidth = 0.5) +
+  # DBP gene
+  geom_vline(xintercept = gene_rho, color = "darkorange", linewidth = 1) +
+  annotate("text", x = gene_rho, y = -Inf, label = "DBP",
+           hjust = -0.1, vjust = -0.5, color = "darkorange", size = 4, fontface = "bold") +
+  # Significant genes as segments at the bottom
+  geom_segment(data = sig_genes_rho,
+               aes(x = rho, xend = rho, y = -Inf, yend = 0),
+               color = "purple", linewidth = 0.8, alpha = 0.7) +
+  geom_text_repel(data = sig_genes_rho,
+                  aes(x = rho, y = 0, label = V9),
+                  angle = 90, size = 3, color = "purple",
+                  nudge_y = 200, segment.color = "purple") +
+  annotate("text", x = q["5%"],  y = Inf, label = "5%",  hjust = 1.2,  vjust = 2, color = "firebrick", size = 4) +
+  annotate("text", x = q["95%"], y = Inf, label = "95%", hjust = -0.2, vjust = 2, color = "firebrick", size = 4) +
+  annotate("text", x = q["25%"], y = Inf, label = "25%", hjust = 1.2,  vjust = 2, color = "grey40",    size = 3.5) +
+  annotate("text", x = q["75%"], y = Inf, label = "75%", hjust = -0.2, vjust = 2, color = "grey40",    size = 3.5) +
+  labs(x = "Spearman's correlation", y = "Count") +
+  theme_bw() +
+  theme(
+    axis.text  = element_text(size = 12),
+    axis.title = element_text(size = 13)
+  )
+```
+
+#Correlation of significant genes 5% in F1 Col and F1 ddm1 
+```{r}
+# All genes in the bottom 5% quantile
+genes_5pct_ddm1 <- all_tes_log2_with_annotation %>%
+  filter(rho <= q["5%"] | rho >= q["95%"]) %>%
+  distinct(V9, rho) %>%
+  arrange(rho)
+genes_5pct_ddm1$cross <- "ddm1"
+
+genes_5pct_col0 <- all_tes_log2_with_annotation %>%
+  filter(rho <= q["5%"] | rho >= q["95%"]) %>%
+  distinct(V9, rho) %>%
+  arrange(rho)
+genes_5pct_col0$cross <- "f1_Col0"
+
+
+genes_5pct <- inner_join(genes_5pct_ddm1,genes_5pct_col0, by=c("V9"))
+
+
+
+genes_5pct %>% 
+  filter(V9 %in% significant_genes$tair_id) %>%  
+  ggplot(aes(x = rho.y, y = rho.x)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
+  geom_text_repel(aes(label = V9), size = 2.5) +
+  labs(x = "Rho (Col0)", y = "Rho (ddm1)",
+       title = "Correlation shift between ddm1 and Col0") +
+  theme_bw()
+```
+
+
+
+

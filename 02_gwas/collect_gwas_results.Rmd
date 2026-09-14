@@ -1,0 +1,305 @@
+---
+title: "collect_gwas_results"
+output: html_document
+date: "2026-04-21"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+# Set your root directory
+root_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_tes/log2/with_K"  # change if needed
+
+# Find all *.assoc.txt files recursively
+assoc_files <- list.files(
+  path = root_dir,
+  pattern = "\\.assoc\\.txt$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Function to extract a readable name from the file path
+get_name <- function(filepath) {
+  # Extract meaningful parts: blups_* / (cluster*) / log2|zscale / with_K
+  parts <- strsplit(filepath, "/")[[1]]
+  # Keep parts starting from blups_* folder
+  blups_idx <- grep("^blups_", parts)
+  if (length(blups_idx) > 0) {
+    paste(parts[blups_idx:length(parts)], collapse = " / ")
+  } else {
+    basename(filepath)
+  }
+}
+
+# Read each file, get top 20 SNPs by p-value
+results <- map_dfr(assoc_files, function(f) {
+  message(sprintf("Processing %d/%d: %s", which(assoc_files == f), length(assoc_files), basename(f)))
+  df <- read_tsv(f, show_col_types = FALSE)
+  df %>%
+    arrange(p_wald) %>%
+    slice_head(n = 20) %>%
+    mutate(source_file = get_name(f))
+})
+
+# Save to CSV
+write_csv(results, "top20_gwas_snps.csv")
+cat("Done! Results saved to top20_gwas_snps_individual_tes.csv\n")
+cat("Total rows:", nrow(results), "\n")
+```
+
+
+# Read GWAS
+```{r}
+library(dplyr)
+library(ggplot2)
+peaks <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/top20_gwas_snps.csv", sep=",", header=T)
+# Remove individual genes and TEs
+peaks_no_ind_genes_no_ind_tes <- peaks[
+  !grepl("individual_genes|womaf|no_K|zscale", peaks$source_file),
+]
+# Filter on pwald
+#peaks_no_ind_genes_no_ind_tes<-peaks_no_ind_genes_no_ind_tes[-log10(peaks_no_ind_genes_no_ind_tes$p_wald)>6,]
+# Select only zscaled
+peaks_no_ind_genes_no_ind_tes_transf <- peaks_no_ind_genes_no_ind_tes[
+  grepl("average_ddm1_log2_maf005", peaks_no_ind_genes_no_ind_tes$source_file), ] 
+## DBP analysis
+#peaks_no_ind_genes_no_ind_tes_transf <- peaks_no_ind_genes_no_ind_tes_transf %>%
+#  filter(chr == 5, ps >= 842289, ps <= 845454)
+
+## Cluster peaks in proximity
+peaks_sorted <- peaks_no_ind_genes_no_ind_tes_transf %>%
+  arrange(chr, ps) %>%
+  group_by(chr) %>%
+  mutate(
+    locus_id = cumsum(c(1, diff(ps) > 100000))
+  ) %>%
+  ungroup() %>%
+  mutate(locus_label = paste0("chr", chr, "_locus", locus_id))
+
+
+# Count how often peaks appear 
+locus_counts <- peaks_sorted %>%
+  group_by(locus_label, chr) %>%
+  dplyr::summarise(
+    n_gwas = n_distinct(source_file),   # how many GWAS share this locus
+    n_peaks = n(),
+    mean_ps = mean(ps),
+    min_p = min(p_wald),
+    source_files = paste(unique(source_file), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_gwas), min_p)
+
+# Bubble plot: chromosome vs position, size = n_gwas
+ggplot(locus_counts, aes(x = mean_ps / 1e6, y = factor(chr), size = n_gwas, color = n_gwas)) +
+  geom_point(alpha = 0.7) +
+  scale_color_viridis_c() +
+  labs(x = "Position (Mb)", y = "Chromosome", size = "# GWAS", color = "# GWAS",
+       title = "Shared GWAS peaks across studies") +
+  theme_bw()
+```
+## In which phenotypes peak appears the most
+```{r}
+# Split source_files string and count per phenotype
+phenotype_counts <- locus_counts %>%
+  separate_rows(source_files, sep = "; ") %>%
+  mutate(
+    phenotype = source_files %>%
+      gsub(".*/", "", .) %>%
+      gsub("\\.average_ddm1_log2_maf005\\.assoc\\.txt", "", .)
+  ) %>%
+  count(phenotype, sort = TRUE)
+
+locus_counts %>%
+  filter(n_gwas >= 20) %>%
+  mutate(locus_label = reorder(locus_label, n_gwas)) %>%
+  ggplot(aes(x = locus_label, y = n_gwas, fill = -log10(min_p))) +
+  geom_col() +
+  scale_fill_gradientn(colors = c("#90CAF9", "#1565C0", "#B71C1C"),
+                       name = "-log10(p)") +
+  coord_flip() +
+  labs(x = "Locus", y = "# phenotypes with signal",
+       title = "Loci recurring across phenotypes") +
+  theme_bw()
+
+## DBP contribution 
+locus_counts_dbp <-locus_counts[locus_counts$locus_label=="chr5_locus3",]
+## Calculate contribution of DBP
+```
+## Phenotypes contribution
+```{r}
+locus_counts_dbp %>%
+  separate_rows(source_files, sep = "; ") %>%
+  mutate(
+    phenotype = source_files %>%
+      gsub(".*/", "", .) %>%
+      gsub("\\.average_ddm1_log2_maf005\\.assoc\\.txt", "", .)
+  ) %>%
+  left_join(
+    peaks_sorted %>%
+      mutate(phenotype = source_file %>%
+               gsub(".*/", "", .) %>%
+               gsub("\\.average_ddm1_log2_maf005\\.assoc\\.txt", "", .)) %>%
+      group_by(locus_label, phenotype) %>%
+      slice_min(p_wald, n = 1) %>%          # best SNP per phenotype per locus
+      select(locus_label, phenotype, ps, p_wald),
+    by = c("locus_label", "phenotype")
+  ) %>%
+  select(locus_label, phenotype, ps, p_wald) %>%
+  arrange(p_wald) %>%
+  print(n = Inf)
+```
+
+
+```{r}
+locus_counts_dbp %>%
+  separate_rows(source_files, sep = "; ") %>%
+  mutate(
+    phenotype = source_files %>%
+      gsub(".*/", "", .) %>%
+      gsub("\\.average_ddm1_log2_maf005\\.assoc\\.txt", "", .)
+  ) %>%
+  left_join(
+    peaks_sorted %>%
+      mutate(phenotype = source_file %>%
+               gsub(".*/", "", .) %>%
+               gsub("\\.average_ddm1_log2_maf005\\.assoc\\.txt", "", .)) %>%
+      group_by(locus_label, phenotype) %>%
+      slice_min(p_wald, n = 1) %>%
+      select(locus_label, phenotype, ps, p_wald),
+    by = c("locus_label", "phenotype")
+  ) %>%
+  select(locus_label, phenotype, ps, p_wald) %>%
+  arrange(p_wald) %>%
+  ggplot(aes(x = ps / 1e6, y = reorder(phenotype, -p_wald), color = -log10(p_wald))) +
+  geom_point(size = 3) +
+  geom_segment(aes(x = min(ps/1e6), xend = ps/1e6,
+                   y = reorder(phenotype, -p_wald),
+                   yend = reorder(phenotype, -p_wald)),
+               color = "grey80") +
+  scale_color_gradientn(colors = c("#90CAF9", "#1565C0", "#B71C1C"),
+                        name = "-log10(p)") +
+  labs(x = "Position (Mb)", y = NULL,
+       title = paste("Phenotypes at", unique(locus_counts_dbp$locus_label))) +
+  theme_bw()
+```
+
+
+
+
+
+
+##OLD code
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Shorten source_file labels for readability
+peaks_no_ind_genes_no_ind_tes_transf <- peaks_no_ind_genes_no_ind_tes_transf %>%
+  mutate(
+    source_short = gsub(".assoc.txt", "", basename(source_file)),
+    log10p = -log10(p_wald),
+    ps_label = as.factor(ps)
+  )
+
+ggplot(peaks_no_ind_genes_no_ind_tes_transf,
+       aes(x = ps_label, y = log10p, color = source_short)) +
+  geom_point(size = 5, alpha = 0.8) +
+  scale_color_brewer(palette = "Set2", name = "Source") +
+  theme_minimal() +
+  labs(
+    title = "Association signals at Chr5:842289–845454",
+    x = "Position (bp)",
+    y = "-log10(p_wald)"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 7),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  guides(color = guide_legend(nrow = 3))
+```
+
+## What are the GWAses which share loci?
+```{r}
+shared_loci <- locus_counts %>%
+  filter(n_gwas > 10) %>%
+  arrange(desc(n_gwas))
+
+# Which source files are involved?
+contributing_phenotypes <- shared_loci %>%
+  dplyr::select(locus_label, n_gwas, source_files) %>%
+  separate_rows(source_files, sep = "; ") %>%
+  dplyr::count(source_files, sort = TRUE) %>%
+  dplyr::rename(phenotype = source_files, n_loci_contributed = n)
+
+# Plot 
+contributing_phenotypes$phenotype <- gsub(".*/", "", contributing_phenotypes$phenotype)
+ggplot(contributing_phenotypes, aes(n_loci_contributed, phenotype)) +
+  geom_point() +
+  theme(axis.text.y = element_text(size = 5))+xlab("n of loci with significant SNPs in +/- 100Kb from the SNP")
+
+ggplot(contributing_phenotypes, aes(x = n_loci_contributed, y = reorder(phenotype, n_loci_contributed))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme(axis.text.y = element_text(size = 5)) +
+  xlab("n of loci with significant SNPs in +/- 100Kb from the SNP") +
+  ylab("Phenotype")
+```
+
+# Upload TE annotation
+```{r}
+te_annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
+
+# Extract TE name from phenotype (part before the first dot)
+contributing_phenotypes <- contributing_phenotypes %>%
+  mutate(
+    phenotype_clean = trimws(phenotype),
+    te_name = sub("\\..*", "", phenotype_clean)  # everything before first dot
+  )
+
+# Join with te_annotation
+contributing_with_family <- contributing_phenotypes %>%
+  left_join(te_annotation, by = c("te_name" = "Transposon_Family"))
+
+# Count by Superfamily
+superfamily_counts <- contributing_with_family %>%
+  filter(!is.na(Transposon_Super_Family)) %>%
+  group_by(Transposon_Super_Family) %>%
+  dplyr::summarise(n = n_distinct(phenotype_clean), .groups = "drop") %>%
+  arrange(desc(n))
+
+# Pie chart
+ggplot(superfamily_counts, aes(x = reorder(Transposon_Super_Family, n), y = n, fill = Transposon_Super_Family)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n), hjust = -0.2, size = 3) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Contributing phenotypes by TE Superfamily",
+       x = "Superfamily", y = "Number of phenotypes") +
+  expand_limits(y = max(superfamily_counts$n) * 1.1)  # space for labels
+```
+## Plot significance of the peaks
+```{r}
+peaks_no_ind_genes_no_ind_tes_transf <- peaks_no_ind_genes_no_ind_tes[
+  grepl("average_ddm1_zscale_maf005", peaks_no_ind_genes_no_ind_tes$source_file), ]
+
+peaks_no_ind_genes_no_ind_tes_transf$phenotype <- gsub(".*/", "", peaks_no_ind_genes_no_ind_tes_transf$source_file)
+
+peaks_no_ind_genes_no_ind_tes_transf_filt <- peaks_no_ind_genes_no_ind_tes_transf[
+  peaks_no_ind_genes_no_ind_tes_transf$phenotype %in% contributing_phenotypes$phenotype, ]
+# Filter by the position
+peaks_no_ind_genes_no_ind_tes_transf_filt <- peaks_no_ind_genes_no_ind_tes_transf_filt[
+  peaks_no_ind_genes_no_ind_tes_transf_filt$chr == 1 & 
+  peaks_no_ind_genes_no_ind_tes_transf_filt$ps > (22408743 - 3000000) & 
+  peaks_no_ind_genes_no_ind_tes_transf_filt$ps < (22408743 + 3000000), ]
+
+ggplot(peaks_no_ind_genes_no_ind_tes_transf_filt, aes(x = -log10(p_wald))) +
+  geom_histogram(fill = "steelblue", color = "white", bins = 30) +
+  theme_bw() +
+  labs(x = "-log10(p_wald)", y = "Count", title = "Distribution of -log10 pwald")
+```
+
+
+
+

@@ -1,0 +1,80 @@
+---
+title: "010_limix_gwas"
+output: html_document
+date: "2025-04-25"
+---
+
+```{r}
+# Read the CSV file
+f1_ddm1_effect <- read.csv("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limix_gwas/large_effects_trait2_annotated.csv", stringsAsFactors = FALSE)
+f1_Col0_effect <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limix_gwas/gwas_results_with_pvalues.csv", stringsAsFactors = FALSE)
+# Check the structure
+str(df)
+head(df)
+```
+## Correlation 
+```{r}
+common_table <- inner_join(f1_ddm1_effect,f1_Col0_effect, by=c("chromosome", "position") )
+
+ggplot(common_table, aes(effsize.y, effsize.x))+geom_point()+facet_wrap(~chromosome)+xlab("F1 Col effect size") + ylab("F1 ddm1 effect size")
+
+
+ggplot(f1_Col0_effect, aes(-log10(pv10), -log10(pv20)))+geom_point()+facet_wrap(~chromosome)+xlab("-log10 F1 ddm1")+ylab("-log10 F1 ddm1 X F1 Col0")
+```
+
+
+```{r}
+library(tidyr)
+library(dplyr)
+
+# Filter for the two main environments/traits
+df_wide <- df %>%
+  filter(env %in% c("env0_env0_0", "env1_env1_0")) %>%
+  dplyr::select(effect_name, chromosome, position, env, effsize) %>%
+  pivot_wider(names_from = env, values_from = effsize)
+
+# Rename columns for clarity
+colnames(df_wide)[colnames(df_wide) == "env0_env0_0"] <- "trait1_effsize"
+colnames(df_wide)[colnames(df_wide) == "env1_env1_0"] <- "trait2_effsize"
+
+head(df_wide)
+```
+
+
+```{r}
+plot(
+  df_wide$trait1_effsize, df_wide$trait2_effsize,
+  xlab = "SNP effect on Trait 1",
+  ylab = "SNP effect on Trait 2",
+  main = "SNP effect sizes: Trait 1 vs Trait 2",
+  pch = 20, col = rgb(0,0,1,0.5)
+)
+abline(h=0, v=0, lty=2, col="grey")
+```
+
+
+```{r}
+library(ggplot2)
+
+# Trait 1 Manhattan plot
+ggplot(df_wide, aes(x = position, y = abs(trait1_effsize), color = chromosome)) +
+  geom_point(size = 0.7) +
+  labs(title = "Manhattan plot: Trait 1", x = "Position", y = "|Effect size|") +
+  theme_minimal()
+
+# Trait 2 Manhattan plot
+ggplot(df, aes(x = position, y = (effsize), color = chromosome)) +
+  geom_point(size = 0.7) +
+  labs(title = "Manhattan plot: Trait 2", x = "Position", y = "|Effect size|") +
+  theme_minimal()+facet_wrap(~chromosome, nrow=1)
+```
+
+```{r}
+df_wide %>%
+  filter(abs(trait1_effsize) > 0.05 | abs(trait2_effsize) > 0.05)
+```
+
+
+
+
+

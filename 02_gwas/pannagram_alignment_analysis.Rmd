@@ -1,0 +1,529 @@
+---
+title: "010_alignment_of_tes"
+output: html_document
+date: "2026-05-18"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+alignment_chr5 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_847439_plusmin100k/chr5_AT5G03415.matrix.txt", header=T) ## do it by gene ! 
+# Remove TAIR12
+alignment_chr5 <-alignment_chr5[alignment_chr5$V1!="100002",]
+ids <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/01_data/full_genomes/full_genomes_frozen_august_2025/Athaliana_assemblies_Paper2_ids.txt", sep="\t")
+# Get accessions used in expriment 
+sampledata<- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/ddm1_crosses_metadata_2repl_filtered_num_reads_mapping_rate_filtered_outliers_by_pca.txt",header=T, sep=",") %>% dplyr::select(Accession)
+sampledata <- unique(sampledata)
+```
+# Map ids to the data
+```{r}
+# Replace V1 (Assembly_ID) with Accession_ID
+# Replace Assembly_ID with Accession_ID
+alignment_chr5$V1 <- ids$Accession_ID[match(alignment_chr5$V1, ids$Assembly_ID)]
+# Filter only accessions present in the data
+alignment_chr5 <- alignment_chr5[alignment_chr5$V1 %in% sampledata$Accession, ]
+```
+## Visualize alignment 
+```{r}
+library(Biostrings)
+library(msaR)
+library(htmlwidgets)
+# Extract only nucleotide columns (exclude the ID column, which is column 1)
+seqs <- alignment_chr5[, -1, with = FALSE]  # data.table syntax
+# Collapse each row into a single string
+seq_strings <- apply(seqs, 1, paste, collapse = "")
+# Set names as accession IDs from column 1
+names(seq_strings) <- alignment_chr5[[1]]  # use [[1]] to safely get first column
+# Convert to DNAStringSet
+
+dna_set <- DNAStringSet(seq_strings)
+dna_set
+
+msaR(dna_set)  # opens interactive viewer
+msa_widget <- msaR(dna_set)
+saveWidget(msa_widget, file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_847439_plusmin100k/chr5_AT5G03310.html", selfcontained = TRUE)
+```
+## Remove columns if they are 0 
+```{r}
+seqs <- alignment_chr5[, -1, with = FALSE]
+
+# Get row index for 6909
+idx_6909 <- which(alignment_chr5[[1]] == "6909")
+
+# Keep columns where 6909 is NOT 0
+cols_to_keep <- seqs[idx_6909, ] != "-"
+
+seqs_filtered <- seqs[, which(cols_to_keep), with = FALSE]
+
+# Build sequences
+seq_strings <- apply(seqs_filtered, 1, paste, collapse = "")
+names(seq_strings) <- alignment_chr5[[1]]
+
+dna_set <- DNAStringSet(seq_strings)
+
+msa_widget <- msaR(dna_set)
+
+
+saveWidget(msa_widget, file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_847439_plusmin100k/chr5_AT5G03310_without_gaps_6909.html", selfcontained = TRUE)
+```
+## Make a dendrogram
+```{r}
+library(ape)
+library(ggplot2)
+library(ggtree)  # optional, for nicer trees
+
+seqs_filtered <- seqs # With gaps in 6909
+
+seq_strings <- apply(seqs_filtered, 1, paste, collapse = "")
+names(seq_strings) <- alignment_chr5[[1]]
+dna_set <- DNAStringSet(seq_strings)
+
+# Convert to DNAbin to ape format
+dna_bin <- as.DNAbin(dna_set)
+# Compute pairwise distance matrix (p-distance, ignores gaps)
+dist_mat <- dist.dna(dna_bin, model = "raw", pairwise.deletion = TRUE)
+# Hierarchical clustering
+hc <- hclust(dist_mat, method = "complete")  # or "ward.D2", "average"
+
+# Simple dendrogram without gaps
+plot(hc, main = "Haplotype Dendrogram - chr5 region",
+     xlab = "Accession", sub = "", cex = 0.6)
+```
+## Visualize with gaps
+```{r}
+# This at least doesn't delete gap sites, but treats gap vs base as "unknown"
+seqs_filtered <- seqs
+seq_strings_n <- gsub("-", "M", seq_strings)
+dna_bin <- as.DNAbin(DNAStringSet(seq_strings_n))
+dist_mat <- dist.dna(dna_bin, model = "raw", pairwise.deletion = FALSE)
+hc <- hclust(dist_mat, method = "complete")
+# Simple base R dendrogram 
+plot(hc, main = "Haplotype Dendrogram - chr5 region",
+     xlab = "Accession", sub = "", cex = 0.6, ylab="pairwise Hamming distance")
+```
+
+```{r}
+library(Biostrings)
+dist_mat <- stringDist(DNAStringSet(seq_strings), method = "hamming")
+hc <- hclust(dist_mat, method = "complete")
+# Simple base R dendrogram 
+plot(hc, main = "Haplotype Dendrogram AT5G03440",
+     xlab = "Accession", sub = "", cex = 0.6, ylab="pairwise Hamming distance")
+```
+```{r}
+library(dendextend)
+
+# Remove 9533
+seq_strings_filtered <- seq_strings[names(seq_strings) != "9533"]
+
+dist_mat <- stringDist(DNAStringSet(seq_strings_filtered), method = "hamming")
+hc <- hclust(dist_mat, method = "complete")
+
+# Get cluster assignments
+clusters <- cutree(hc, k = 2)
+cat("Cluster 1:\n"); print(names(clusters[clusters == 1]))
+cat("Cluster 2:\n"); print(names(clusters[clusters == 2]))
+
+# Plot
+dend <- as.dendrogram(hc)
+dend <- color_branches(dend, k = 2)
+dend <- color_labels(dend, k = 2)
+
+plot(dend,
+     main = "Haplotype Dendrogram AT5G03440 (without 9533)",
+     xlab = "Accession", sub = "",
+     cex = 0.6, ylab = "pairwise Hamming distance")
+```
+
+## Color haplotypes based on geography
+```{r}
+geography <- fread("/groups/nordborg/projects/ddm1_resilencing/10_metadata/metainformtaion_accessions.txt")
+```
+
+```{r}
+library(ggplot2)
+library(maps)
+# or use ggmap / leaflet for interactive
+
+# 1. Get haplotype assignments (from your clustering)
+clusters <- cutree(hc, k = 2)  # adjust k based on dendrogram — looks like 2 main clades
+haplotype_table <- data.frame(
+  accession_ID = as.integer(names(clusters)),
+  Haplotype    = paste0("H", clusters)
+)
+
+# 2. Merge with geography
+geo_hap <- merge(geography, haplotype_table, by = "accession_ID")
+
+# 3. Clean latitude/longitude (in case they use comma as decimal)
+geo_hap$latitude  <- as.numeric(gsub(",", ".", geo_hap$latitude))
+geo_hap$longitude <- as.numeric(gsub(",", ".", geo_hap$longitude))
+
+# 4. Plot on map
+world <- map_data("world")
+
+ggplot() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group),
+               fill = "grey90", color = "grey70", linewidth = 0.2) +
+  geom_point(data = geo_hap,
+             aes(x = longitude, y = latitude, color = Haplotype),
+             size = 2.5, alpha = 0.8) +
+  coord_fixed(1.3, xlim = c(-15, 40), ylim = c(30, 70)) +  # zoom to Europe
+  scale_color_manual(values = c("H1" = "#E41A1C", "H2" = "#377EB8",
+                                "H3" = "#4DAF4A", "H4" = "#984EA3")) +
+  theme_minimal() +
+  labs(title = "Haplotype distribution - chr5 AT5G03440 region",
+       x = "Longitude", y = "Latitude", color = "Haplotype")
+
+write.csv2(haplotype_table, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_847439_plusmin100k/haplotypes_AT5G03440.csv", quote = F, row.names = F)
+```
+## Haplotype and expression
+```{r}
+clusters <- cutree(hc, k = 2)  # lades k based on dendrogram — looks like 2 main clades
+haplotype_table <- data.frame(
+  accession_ID = as.integer(names(clusters)),
+  Haplotype    = paste0("H", clusters)
+)
+
+pheno <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/rank_transform/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam", header = FALSE) %>% select(V2,V6)
+colnames(pheno) <- c("accession_ID", "phenotype")
+pheno_with_haplotypes <- inner_join(pheno,haplotype_table, by=c("accession_ID"))
+
+
+library(ggpubr)
+
+ggplot(pheno_with_haplotypes, aes(x = Haplotype, y = phenotype, fill = Haplotype)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 1.5, alpha = 0.5) +
+  scale_fill_manual(values = c("H1" = "#E41A1C", "H2" = "#377EB8",
+                               "H3" = "#4DAF4A", "H4" = "#984EA3")) +
+  theme_minimal() +
+  labs(title = "Phenotype by Haplotype", x = "Haplotype", y = "Phenotype (BLUP)") +
+  theme(legend.position = "none")
+```
+
+## Correlation with real TPM
+```{r}
+long_data_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_long_data.csv")
+long_data_anti_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sense_long_data.csv")
+# attach strand
+long_data_sense$strand <-"+"
+long_data_anti_sense$strand <-"-"
+# Combine dataframe
+long_data_anti_sense2 <- long_data_anti_sense %>%
+  mutate(TE = gsub("_AS$", "", TE))
+
+# TEs unique to each direction
+sense_only_TEs <- setdiff(long_data_sense$TE, long_data_anti_sense$TE)
+anti_only_TEs  <- setdiff(long_data_anti_sense2$TE, long_data_sense$TE)
+# Filter and combine
+long_data_combined <- bind_rows(
+  long_data_sense %>% filter(TE %in% sense_only_TEs),
+  long_data_anti_sense2 %>% filter(TE %in% anti_only_TEs)
+)
+# All TEs, not only unique 
+long_data_combined_all <- rbind(long_data_sense,long_data_anti_sense)
+```
+## Connect TPM values to the genotype 
+```{r}
+long_data_combined_all <- long_data_combined_all %>%
+  dplyr::select(TE, expression_value, genotype, accession, replicate) %>%
+  filter(genotype == "ddm1") %>%
+  group_by(accession) %>%                          
+  dplyr::summarise(phenotype = mean(log2(expression_value + 1)), .groups = "drop")
+```
+## Visualize vs real TPMs
+```{r}
+clusters <- cutree(hc, k = 2)  # lades k based on dendrogram — looks like 2 main clades
+haplotype_table <- data.frame(
+  accession_ID = as.integer(names(clusters)),
+  Haplotype    = paste0("H", clusters)
+)
+
+pheno <- long_data_combined_all
+colnames(pheno) <- c("accession_ID", "phenotype")
+pheno_with_haplotypes <- inner_join(pheno,haplotype_table, by=c("accession_ID"))
+
+
+library(ggpubr)
+
+ggplot(pheno_with_haplotypes, aes(x = Haplotype, y = phenotype, fill = Haplotype)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 1.5, alpha = 0.5) +
+  scale_fill_manual(values = c("H1" = "#E41A1C", "H2" = "#377EB8",
+                               "H3" = "#4DAF4A", "H4" = "#984EA3")) +
+  theme_minimal() +
+  labs(title = "Phenotype by Haplotype", x = "Haplotype", y = "Phenotype TPM") +
+  theme(legend.position = "none")
+```
+
+
+## Haplotype network
+```{r}
+library(reshape2)
+# Get variable sites only
+seq_split <- do.call(rbind, strsplit(seq_strings, ""))
+rownames(seq_split) <- names(seq_strings)
+# Keep only variable columns
+variable_cols <- apply(seq_split, 2, function(x) length(unique(x)) > 1)
+seq_variable <- seq_split[, variable_cols]
+
+# Add haplotype info
+df_melt <- melt(seq_variable)
+colnames(df_melt) <- c("Accession", "Position", "Nucleotide")
+df_melt$Haplotype <- haplotype_table$Haplotype[match(df_melt$Accession, haplotype_table$accession_ID)]
+
+# Order by haplotype
+df_melt$Accession <- factor(df_melt$Accession, 
+                             levels = haplotype_table$accession_ID[order(haplotype_table$Haplotype)])
+
+ggplot(df_melt, aes(x = Position, y = Accession, fill = Nucleotide)) +
+  geom_tile() +
+  scale_fill_manual(values = c("A" = "#2ecc71", "T" = "#e74c3c",
+                               "C" = "#3498db", "G" = "#f39c12", "-" = "grey20")) +
+  facet_grid(Haplotype ~ ., scales = "free_y", space = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.text.y = element_text(size = 5)) +
+  labs(title = "SNP heatmap by haplotype", x = "Variable sites", y = "Accession")
+```
+## Put where the SNPs are 
+```{r}
+library(biomaRt)
+library(Gviz)
+library(GenomicRanges)
+
+mart <- useMart("plants_mart", 
+                dataset = "athaliana_eg_gene",
+                host = "https://plants.ensembl.org")
+
+# Step 1: Get transcript/exon structure
+exon_info <- getBM(
+  attributes = c("ensembl_gene_id", "ensembl_transcript_id", "external_gene_name",
+                 "chromosome_name", "exon_chrom_start", "exon_chrom_end",
+                 "rank", "strand", "5_utr_start", "5_utr_end",
+                 "3_utr_start", "3_utr_end"),
+  filters = c("chromosomal_region"),
+  values = list("5:856815:858444"),
+  mart = mart
+)
+```
+
+```{r}
+library(Gviz)
+library(GenomicRanges)
+
+gene_start <- min(exon_info$exon_chrom_start) - 1000
+gene_end   <- max(exon_info$exon_chrom_end) + 1000
+
+# Axis
+gtrack <- GenomeAxisTrack()
+
+# Gene structure
+gr <- GRanges(
+  seqnames   = "5",
+  ranges     = IRanges(start = exon_info$exon_chrom_start,
+                       end   = exon_info$exon_chrom_end),
+  strand     = "+",
+  transcript = exon_info$ensembl_transcript_id,
+  gene       = exon_info$external_gene_name,
+  exon       = paste0("exon", exon_info$rank),
+  feature    = "protein_coding"
+)
+
+grtrack <- GeneRegionTrack(gr, 
+                           name = "AT5G03440",
+                           col = "black", fill = "grey80",
+                           transcriptAnnotation = "transcript")
+
+# SNPs
+snp_track <- AnnotationTrack(
+  GRanges("5", IRanges(c(857989,857991,857373,857173,857505,857426,857003,857706,857732,857497,857500,857657,857399,857522,857247,857441,857444,857480), c(857989,857991,857373,857173,857505,857426,857003,857706,857732,857497,857500,857657,857399,857522,857247,857441,857444,857480))),
+  name = "SNPs",
+  col  = "red", fill = "red",
+  fontcolor.feature = "red",
+  cex.feature = 0.7
+)
+
+# Plot
+plotTracks(list(gtrack, grtrack, snp_track),
+           chromosome = "5",
+           from = gene_start, to = gene_end,
+           background.title = "white",
+           col.title = "black",
+           col.axis = "black")
+```
+## Connect gene expression to haplotypes
+```{r}
+gene_expression <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_long_data_with_controls_GENES.csv")
+```
+
+```{r}
+sense_expression <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/sense_expr_te_genes_no_filter_reads_log2cpm_normalization.csv.gz", sep=",")
+sense_expression <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/anti_sense_expr_te_genes_no_filter_reads_log2cpm_normalization.csv.gz", sep=",")
+sense_expression <- sense_expression[sense_expression$id=="AT5G66750" & ,]
+sense_expression <- sense_expression %>% dplyr::select(accession,log2cpm)
+## Is ddm1 expression connected to the haplotype strucutre? 
+
+```
+
+```{r}
+clusters <- cutree(hc, k = 2)  # lades k based on dendrogram — looks like 2 main clades
+haplotype_table <- data.frame(
+  accession_ID = as.integer(names(clusters)),
+  Haplotype    = paste0("H", clusters)
+)
+
+pheno <- sense_expression
+colnames(pheno) <- c("accession_ID", "phenotype")
+pheno_with_haplotypes <- inner_join(pheno,haplotype_table, by=c("accession_ID"))
+
+
+library(ggpubr)
+
+ggplot(pheno_with_haplotypes, aes(x = Haplotype, y = phenotype, fill = Haplotype)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 1.5, alpha = 0.5) +
+  scale_fill_manual(values = c("H1" = "#E41A1C", "H2" = "#377EB8",
+                               "H3" = "#4DAF4A", "H4" = "#984EA3")) +
+  theme_minimal() +
+  labs(title = "Phenotype by Haplotype", x = "Haplotype", y = "Phenotype TPM") +
+  theme(legend.position = "none")
+```
+
+
+
+### OLD
+## Phenotype
+```{r}
+pheno <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/rank_transform/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam", header = FALSE)
+
+ggplot(pheno, aes(V2,V6))+geom_point() label 9511,9537,990,7319
+
+
+
+# required packages
+library(ggplot2)
+library(dplyr)
+library(ggrepel)    # for non-overlapping labels
+
+# vector of accessions to highlight (use character or numeric to match your data)
+highlight_ids <- c("9511","9537","990","7319")
+
+# prepare data: ensure accession is character if needed
+pheno2 <- pheno %>%
+  mutate(accession = as.character(V2),
+         is_high = if_else(accession %in% highlight_ids, "highlight", "other"))
+
+# plot
+ggplot(pheno2, aes(x = V6, y = as.character(V2))) +
+  geom_point(aes(color = is_high, size = is_high), alpha = 0.7) +
+  scale_color_manual(values = c(other = "grey70", highlight = "red")) +
+  scale_size_manual(values  = c(other = 1.5,  highlight = 3.5)) +
+  # label only the highlighted rows; change label = accession to label = V2 if you want the accession shown
+  geom_text_repel(
+    data = filter(pheno2, is_high == "highlight"),
+    aes(label = V2),             # or aes(label = accession)
+    size = 3.5,
+    nudge_y = 0.02 * diff(range(pheno2$V6, na.rm=TRUE)),
+    box.padding = 0.35,
+    point.padding = 0.5
+  ) +
+  theme_minimal() +
+  labs(color = "", size = "", x = "V2", y = "V6",
+       title = "V2 vs V6 — highlighted accessions")
+```
+
+### Get a specific position
+```{r}
+# Subset the DNAStringSet to your window first
+window_start <- 262 - 10
+window_end   <- 262 + 10
+dna_window <- subseq(dna_set, start = window_start, end = window_end)
+msaR(dna_window, menu = TRUE, seqlogo = FALSE, overviewbox = FALSE)
+
+library(DECIPHER)
+library(msa)
+
+dna_msa <- DNAMultipleAlignment(dna_set)
+
+library(ggmsa)
+
+ggmsa(dna_set, start = 1, end = 483, seq_name = TRUE) +
+  scale_x_continuous(labels = function(x) x + 799223)
+```
+
+
+## Sort based on the allele
+```{r}
+library(vcfR)
+library(tidyverse)
+
+vcf <- read.vcfR("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_847439_plusmin100k/AT5G03415.vcf")
+
+# Extract genotype matrix (0/0, 0/1, 1/0,1/1 → 0, 1,1, 2)
+geno <- extract.gt(vcf, element = "GT", as.numeric = FALSE)
+
+# Convert to dosage (0/0=0, 0/1=1, 1/1=2)
+geno_dosage <- apply(geno, 2, function(x) {
+  case_when(
+    x == "0/0" ~ 0,
+    x %in% c("0/1", "1/0") ~ 1,
+    x == "1/1" ~ 2,
+    TRUE ~ NA_real_
+  )
+})
+
+rownames(geno_dosage) <- paste0(vcf@fix[,"CHROM"], "_", vcf@fix[,"POS"])
+geno_dosage <- t(geno_dosage)  
+geno_filtered <- geno[rownames(geno) %in% c("Chr5_844294", "Chr5_842795"), ]
+geno_filtered <- t(geno_filtered)
+geno_filtered <- as.data.frame(geno_filtered)
+```
+
+```{r}
+# Create a grouping key from the 2 SNPs
+geno_filtered$accession <- rownames(geno_filtered)
+geno_filtered$group <- paste(geno_filtered$Chr5_842795)
+
+# Order: first by SNP1 (Chr5_842795), then by SNP2 (Chr5_844294)
+geno_ordered <- geno_filtered[order(geno_filtered$Chr5_842795), ]
+geno_ordered <- geno_ordered[order(geno_ordered$Chr5_842795, decreasing = TRUE), ] %>% na.omit()
+accession_order <- geno_ordered$accession
+# Get accession order (1/1 first, then 0/0 etc.)
+accession_order <- geno_ordered$accession
+```
+
+
+
+```{r}
+library(Biostrings)
+
+# Reorder alignment to match accession_order
+alignment_chr5_ordered <- alignment_chr5[match(accession_order, alignment_chr5$V1), ]
+# Remove any NAs (accessions in order but not in alignment)
+alignment_chr5_ordered <- alignment_chr5_ordered[!is.na(alignment_chr5_ordered$V1), ]
+
+# Extract sequence columns
+seqs <- alignment_chr5_ordered[, -1, with = FALSE]
+
+# Remove columns where 6909 has "-"
+idx_6909 <- which(alignment_chr5_ordered[[1]] == "6909")
+cols_to_keep <- as.logical(unlist(seqs[idx_6909, ] != "-"))
+seqs_filtered <- seqs[, which(cols_to_keep), with = FALSE]
+
+# Build sequences
+seq_strings <- apply(seqs_filtered, 1, paste, collapse = "")
+names(seq_strings) <- alignment_chr5_ordered[[1]]
+
+# Convert to DNAStringSet
+dna_set <- DNAStringSet(seq_strings)
+
+# Visualize
+msa_widget <- msaR(dna_set)
+saveWidget(msa_widget, 
+           file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_847439_plusmin100k/chr5_AT5G03415_snp_ordered_00then11.html", 
+           selfcontained = TRUE)
+
+## Delete the places where 6909 is empty
+
+```

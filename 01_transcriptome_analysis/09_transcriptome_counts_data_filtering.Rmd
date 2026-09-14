@@ -1,0 +1,306 @@
+---
+title: "001_data_filtering"
+output: html_document
+date: "2026-09-02"
+---
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+```
+We start with the table of 2044 plants (https://docs.google.com/spreadsheets/d/1etuHHVN-Qp1wSHYS4RmYNLXaALZQZabgQFIybjs5iHk/edit?gid=1031800793#gid=1031800793 )
+```{r}
+sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_metadata_with_ibdpainting_all_samples.txt", header=T, sep="\t")
+## Add mapping rate to the samples
+mapping_rate <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/with_tes_flipped/stats_mapping_out.txt", header=T)
+mapping_rate$mapping_rate <-(mapping_rate$uniquely_mapped_reads/mapping_rate$input_reads)*100
+## Add 
+sampledata <- left_join(sampledata, mapping_rate, by=c("Sample_id"="sample_id"))
+```
+
+
+```{r}
+print(paste("number of samples before filtering:", length(unique(sampledata$Sample_id))))
+print(paste("number of accessions before filtering:", length(unique(sampledata$Accession))))
+replicate_counts <- sampledata %>%
+  filter(Accession != 6909, Genotype %in% c("F1_Col", "F1_ddm1")) %>%
+  group_by(Accession, Genotype) %>%
+  dplyr::summarise(n_replicates = n(), .groups = "drop") %>%
+  filter(n_replicates >= 2)
+print(paste("number of accessions with >=2 replicates before filtering:", length(unique(replicate_counts$Accession))))
+```
+# Miscrossed accessions filtering
+The first thing we check if there are any mis-crossed accessions. For that we run ibdpaint and checked them visually.
+Accessions which are detected to be selfed 6909 were re-assigned
+```{r}
+# Keep only ibdpaint confirmed samples
+sampledata <- sampledata %>% filter(ibdpaint == "yes" | ibdpaint == "6909" )
+print(paste("number of samples with ibdpaint:", length(unique(sampledata$Sample_id))))
+print(paste("number of accessions with ibdpaint:", length(unique(sampledata$Accession))))
+
+# Replicate count 
+replicate_counts <- sampledata %>%
+  filter(Accession != 6909, Genotype %in% c("F1_Col", "F1_ddm1")) %>%
+  group_by(Accession, Genotype) %>%
+  dplyr::summarise(n_replicates = n(), .groups = "drop") %>%
+  filter(n_replicates >= 2)
+
+print(paste("number of accessions with >=2 replicates:", length(unique(replicate_counts$Accession))))
+```
+# Filter number of reads
+```{r}
+sampledata <- sampledata %>% filter(Number_of_reads >= 500000)
+print(paste("number of samples number of reads >=50000:", length(unique(sampledata$Sample_id))))
+print(paste("number of accessions number of reads >=50000:", length(unique(sampledata$Accession))))
+# Replicate count 
+replicate_counts <- sampledata %>%
+  filter(Accession != 6909, Genotype %in% c("F1_Col", "F1_ddm1")) %>%
+  group_by(Accession, Genotype) %>%
+  dplyr::summarise(n_replicates = n(), .groups = "drop") %>%
+  filter(n_replicates >= 2)
+
+print(paste("number of accessions with >=2 replicates:", length(unique(replicate_counts$Accession))))
+```
+# Filter Sanger not confirmed controls 
+We checked our controls (ddm1 Col0) with Sanger sequencing to see that ddm1 mutation happened. Not confirmed samples are filtered out 
+```{r}
+sampledata <- sampledata %>% filter(is.na(Status_sanger) | Status_sanger != "FAIL")
+print(paste("number of samples with failed sanger check:", length(unique(sampledata$Sample_id))))
+print(paste("number of accessions with failed sanger check::", length(unique(sampledata$Accession))))
+# Replicate count 
+replicate_counts <- sampledata %>%
+  filter(Accession != 6909, Genotype %in% c("F1_Col", "F1_ddm1")) %>%
+  group_by(Accession, Genotype) %>%
+  dplyr::summarise(n_replicates = n(), .groups = "drop") %>%
+  filter(n_replicates >= 2)
+
+print(paste("number of accessions with >=2 replicates:", length(unique(replicate_counts$Accession))))
+```
+# Filter mapping rate 
+Pierre suggested to filter out samples with <=70 mapping rate
+
+
+```{r}
+sampledata <- sampledata %>% filter(Number_of_reads >= 500000)
+print(paste("number of samples number of reads >=50000:", length(unique(sampledata$Sample_id))))
+print(paste("number of accessions number of reads >=50000:", length(unique(sampledata$Accession))))
+# Replicate count 
+replicate_counts <- sampledata %>%
+  filter(Accession != 6909, Genotype %in% c("F1_Col", "F1_ddm1")) %>%
+  group_by(Accession, Genotype) %>%
+  dplyr::summarise(n_replicates = n(), .groups = "drop") %>%
+  filter(n_replicates >= 2)
+
+print(paste("number of accessions with >=2 replicates:", length(unique(replicate_counts$Accession))))
+```
+##############################
+## PCA check of the samples ##
+##############################
+The idea here is to use PCA data to filter out samples which does not fit 
+```{r}
+library(tximport)
+# Base directory for RSEM outputs
+rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/005_quant/rsem/sense_with_opposite_te"
+# Construct sample paths 
+sample_paths <- file.path(rsem_base_dir)
+# Collect gene results 
+files <- file.path(sample_paths, paste0(sampledata$Sample_id, ".genes.results"))
+# Check which files exist
+existing_files <- files[file.exists(files)]
+# Get the sample IDs from sampledata that correspond to existing files
+file_indices <- which(file.exists(files))
+fileSampleIDs <- sampledata$Sample_id[file_indices]
+# Create a named vector for tximport with proper sample IDs
+names(existing_files) <- fileSampleIDs
+# Verify the names are correct
+head(names(existing_files))
+# Perform tximport for RSEM quantification
+txi.rsem <- tximport(existing_files, type = "rsem")
+
+# Check column names now
+head(colnames(txi.rsem$counts))
+dim(txi.rsem$counts)
+
+# Filter sampledata 
+filteredSampleData <- sampledata[sampledata$Sample_id %in% fileSampleIDs, ]
+rownames(filteredSampleData) <- filteredSampleData$Sample_id
+
+# Subset txi.rsem
+sampleNames <- rownames(filteredSampleData)
+
+# Subset the txi.rsem object
+txi.rsem$counts <- txi.rsem$counts[, sampleNames, drop = FALSE]
+txi.rsem$abundance <- txi.rsem$abundance[, sampleNames, drop = FALSE]
+txi.rsem$length <- txi.rsem$length[, sampleNames, drop = FALSE]
+
+# Now extract counts
+counts <- txi.rsem$counts
+rownames(counts) <-rownames(txi.rsem$counts)
+dim(counts)
+```
+
+```{r}
+# Perform filtering 
+library(edgeR)
+colnames(counts) <- (paste(filteredSampleData$Genotype, 
+                                     filteredSampleData$Accession, 
+                                     filteredSampleData$Replicate,
+                                     filteredSampleData$Request_id,filteredSampleData$Sample_id, sep="_"))
+# Define variant 
+variant <- factor(filteredSampleData$Variant)
+genotype <- factor(filteredSampleData$Genotype)
+d0 <- DGEList(counts = counts)
+d0 <- d0[rowSums(d0$counts) > 0, ]
+# Keep genes/TEs with >= 10 counts total across all samples (not restricted to ddm1_ct)
+keep <- rowSums(d0$counts) >= 10
+d0_filtered <- d0[keep, , keep.lib.sizes = FALSE]
+# Normalize
+d0_filtered <- calcNormFactors(d0_filtered)
+
+# Print summary
+cat("Total genes before filtering:", nrow(d0), "\n")
+cat("Genes retained after filtering:", nrow(d0_filtered), "\n")
+cat("Percentage retained:", round(nrow(d0_filtered)/nrow(d0)*100, 1), "%\n")
+
+# Before filtering
+log_cpm_before <- cpm(d0, log=TRUE)
+# After filtering
+log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=TRUE)
+log_cpm_after_manual <- log2(log_cpm_after_manual+1)
+log_cpm_after <- log_cpm_after_manual
+# Plot density distributions
+par(mfrow=c(1,2))
+plot(density(log_cpm_before), main="Before filtering", xlab="log2 counts")
+plot(density((log_cpm_after)), main="After filtering", xlab="log2 counts")
+```
+## Construct PCA 
+```{r}
+# Transpose so samples are rows, features are columns
+## Select genes and TEs
+log_cpm_after_tes <- grepl("AT[1-5]TE", rownames(log_cpm_after))
+log_cpm_after_tes <- log_cpm_after[log_cpm_after_tes, ]
+log_cpm_after_genes <- !grepl("AT[1-5]TE", rownames(log_cpm_after))
+log_cpm_after_genes <- log_cpm_after[log_cpm_after_genes, ]
+pca_input <- t(log_cpm_after_genes)
+# Run PCA (center and scale as needed)
+pca_res <- prcomp(pca_input, center = TRUE, scale. = FALSE)
+
+# Variance explained
+var_explained <- pca_res$sdev^2 / sum(pca_res$sdev^2)
+
+# Build a data frame for plotting
+library(data.table)
+pca_df <- as.data.table(pca_res$x[, 1:2])
+pca_df[, sample_id := rownames(pca_res$x)]
+pca_df[, genotype := sub("^([^_]+_[^_]+).*", "\\1", sample_id)]
+# Plot
+library(ggplot2)
+ggplot(pca_df, aes(x = PC1, y = PC2, label = sample_id,color = genotype)) +
+  geom_point(size = 2) +
+  labs(
+    x = paste0("PC1 (", round(var_explained[1] * 100, 1), "%)"),
+    y = paste0("PC2 (", round(var_explained[2] * 100, 1), "%)"),
+    title = "PCA of log CPM expression"
+  ) +
+  theme_minimal()
+```
+# PCA per plate
+```{r}
+library(pheatmap)
+
+samples <- colnames(log_cpm_after)
+plate <- sub("^.*_([^_]+)_[^_]+$", "\\1", samples)
+genotype <- sub("^(F1_ddm1|F1_Col|ddm1_ct|ct_col)_.*$", "\\1", samples)
+names(plate) <- samples
+names(genotype) <- samples
+
+table(genotype, useNA = "ifany")  # How many samples we have
+# Select TE ids 
+te_idx <- grepl("^AT[1-5]TE", rownames(log_cpm_after))
+mat_tes <- as.matrix(log_cpm_after[te_idx, , drop = FALSE])
+
+## Save heatmaps and tables
+
+outdir <- "/groups/nordborg/projects/ddm1_resilencing/04_output/heatmaps_plates"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+library(pheatmap)
+
+outdir <- "/groups/nordborg/projects/ddm1_resilencing/04_output/heatmaps_plates"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+plate_tables <- list()
+
+for (p in unique(plate)) {
+
+  samples_p <- samples[plate == p]
+  if (length(samples_p) < 2) next
+
+  mat_p <- mat_tes[, samples_p, drop = FALSE]
+
+  te_variance <- apply(mat_p, 1, var, na.rm = TRUE)
+  te_variance <- te_variance[is.finite(te_variance) & te_variance > 0]
+  if (length(te_variance) < 2) next
+
+  top_tes <- names(sort(te_variance, decreasing = TRUE))[seq_len(min(500, length(te_variance)))]
+
+  annotation_col <- data.frame(
+    Genotype = factor(genotype[samples_p], levels = c("F1_Col", "F1_ddm1", "ddm1_ct", "ct_col")),
+    row.names = samples_p
+  )
+
+  # Run pheatmap, keep the result to access the clustering
+  ph <- pheatmap(
+    mat_p[top_tes, , drop = FALSE],
+    scale = "row",
+    clustering_distance_cols = "correlation",
+    clustering_method = "complete",
+    annotation_col = annotation_col,
+    show_rownames = FALSE,
+    fontsize_col = 7,
+    border_color = NA,
+    main = paste0("Plate ", p, " - ", ncol(mat_p), " samples"),
+    silent = TRUE
+  )
+
+  # Cut the sample dendrogram into clusters
+  n_groups <- length(unique(genotype[samples_p]))
+  n_groups <- max(n_groups, 2)  # at least 2 clusters
+  clusters <- cutree(ph$tree_col, k = n_groups)
+
+  # Build table with cluster assignment
+  plate_df <- data.frame(
+    sample = samples_p,
+    plate = p,
+    genotype = genotype[samples_p],
+    cluster = clusters[samples_p]
+  )
+  plate_tables[[p]] <- plate_df
+
+  write.csv(
+    plate_df,
+    file = file.path(outdir, paste0("plate_", p, "_samples.csv")),
+    row.names = FALSE, quote = F
+  )
+
+  # Save the heatmap to PDF
+  pdf(file.path(outdir, paste0("plate_", p, "_heatmap.pdf")), width = 12, height = 9)
+  grid::grid.newpage()
+  grid::grid.draw(ph$gtable)
+  dev.off()
+}
+
+all_plate_table <- do.call(rbind, plate_tables)
+write.csv(
+  all_plate_table,
+  file = file.path(outdir, "all_plates_samples.csv"),
+  row.names = FALSE, quote = F
+)
+```
+
+
+
+
+
+
+

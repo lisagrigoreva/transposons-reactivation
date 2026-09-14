@@ -1,0 +1,860 @@
+---
+title: "allele_specific_expr_star_rsem"
+output: html_document
+date: "2025-12-02"
+---
+
+---
+title: "allele_sp_expression"
+output: html_document
+date: "2025-09-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Upload libraries 
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggplot2)
+library(broom)
+library(purrr)
+library(stringr)
+library(ComplexHeatmap)
+```
+## Allele specific expression ###
+```{r}
+base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification_rsem/as_forw"
+
+# Get full file paths
+file_paths <- list.files(base_dir, pattern = "\\.genes\\.results$", 
+                         recursive = FALSE, full.names = TRUE)
+
+# Read samples using full paths
+all_quant_data <- map(file_paths, function(file_path) {
+  sample_id <- basename(file_path) %>% str_remove("\\.genes\\.results$")
+  
+  quant_file <- read.table(file_path, header = TRUE, sep = "\t") %>%
+    mutate(
+      genome = str_extract(gene_id, "(?<=_)[^_]+$"),
+      ID = str_remove(gene_id, "_[^_]+$"),
+      sample_id = sample_id
+    )
+  
+  cat("Processed:", file_path, "| Sample:", sample_id, "| Total reads:", sum(quant_file$expected_count), "\n")
+  return(quant_file)
+})
+
+# Combine all data into one dataframe
+combined_quant_data <- bind_rows(all_quant_data)
+
+# Reshape for analysis with both TPM and expected_count
+reshaped_allele_specific_expr <- combined_quant_data %>%
+  dplyr::select(ID, sample_id, genome, TPM, expected_count) 
+
+## Calculate CPM 
+reshaped_allele_specific_expr_cpm <- reshaped_allele_specific_expr %>% 
+  group_by(sample_id, genome) %>% 
+  mutate(CPM = (expected_count / sum(expected_count)) * 1e6) %>%
+  ungroup()
+
+#write.csv2(reshaped_allele_specific_expr,"/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification/counts/reshaped_allele_specific_expr.csv", quote = F, row.names = F)
+```
+
+## Add information about samples
+```{r}
+sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_phenotype_preprocessed_based_on_pca_with_selfers_v2.csv",header=T)
+sampledata <- sampledata %>% dplyr::select(Sample_id,Accession,Variant,Genotype)
+reshaped_allele_specific_expr_cpm$sample_id <- as.numeric(reshaped_allele_specific_expr_cpm$sample_id) # Make sample id numeric
+reshaped_data_with_sampleinfo <- inner_join(reshaped_allele_specific_expr_cpm,sampledata,by=c("sample_id"="Sample_id"))
+```
+## Filter gene and TEs to have at least n reads per condition 
+```{r}
+# Calculate 5% of samples threshold
+total_samples <- length(unique(reshaped_data_with_sampleinfo$sample_id))
+min_samples_threshold <- ceiling(total_samples * 0.05)  # 5% of samples
+
+cat("Total samples:", total_samples, "\n")
+cat("Minimum samples threshold (5%):", min_samples_threshold, "\n")
+
+# Filter: expected_count >= 10 in at least 5% of samples per gene
+reshaped_data_with_sampleinfo_filtered <- reshaped_data_with_sampleinfo %>% 
+  group_by(ID) %>% 
+  filter(sum(expected_count >= 10) >= min_samples_threshold) %>%
+  ungroup()
+
+str(unique(reshaped_data_with_sampleinfo$ID))
+str(unique(reshaped_data_with_sampleinfo_filtered$ID))
+
+# Select TEs 
+tes <- grepl("AT[1-9]TE", reshaped_data_with_sampleinfo_filtered$ID)
+reshaped_data_with_sampleinfo_filtered_tes <- reshaped_data_with_sampleinfo_filtered[tes,]
+str(unique(reshaped_data_with_sampleinfo_filtered_tes$ID))
+
+
+```
+
+
+## Write filtered data 
+```{r}
+write.csv2(reshaped_data_with_sampleinfo_filtered_tes,"/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification_rsem/reshaped_allele_specific_expr_filtered_min10readsin5persamples.csv", quote = F, row.names = F)
+```
+
+####################################
+##########Visualization ##########
+####################################
+
+```{r}
+reshaped_data_with_sampleinfo_filtered <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification_rsem/reshaped_allele_specific_expr_filtered_min10readsin5persamples.csv")
+tes <- grepl("AT[1-9]TE", reshaped_data_with_sampleinfo_filtered$ID)
+reshaped_data_with_sampleinfo_filtered_tes <- reshaped_data_with_sampleinfo_filtered[tes,]
+str(unique(reshaped_data_with_sampleinfo_filtered_tes$ID))
+```
+## Get TEs which are present in all accessions 
+```{r}
+# add genome info
+reshaped_data_with_sampleinfo_filtered_tes$genome_annot <- ifelse(reshaped_data_with_sampleinfo_filtered_tes$genome!="tair10", "accession", reshaped_data_with_sampleinfo_filtered_tes$genome)
+reshaped_data_with_sampleinfo_filtered_tes <- na.omit(reshaped_data_with_sampleinfo_filtered_tes)
+```
+
+
+```{r}
+# Boxplots 
+library(forcats)
+boxplot_data <- reshaped_data_with_sampleinfo_filtered_tes %>%
+  dplyr::select(sample_id, Variant, Genotype, ID, genome, CPM, Accession, TPM,genome_annot) %>%
+  mutate(log2_CPM = log2(CPM + 1)) 
+
+boxplot_data  %>%  filter(Genotype != "ct_col" & Genotype != "ddm1_ct")%>% ggplot(aes(x = genome_annot, y = log2_CPM, fill = genome_annot)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_fill_manual(values = c("accession" = "#E41A1C", "tair10" = "#377EB8")) +
+  facet_wrap(~ Genotype, scales="free") +
+  labs(
+    x = "Genome (Allele)",
+    y = "log2(CPM + 1)",
+    title = "Allelic Expression by Variant",
+    fill = "Genome"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )+ylim(0,10)
+
+
+
+boxplot_data %>% 
+  filter(Genotype != "ct_col" & Genotype != "ddm1_ct" & Genotype != "F1_Col" & genome!=100820)  %>% 
+  mutate(genome = fct_reorder(genome, log2_CPM, .fun = mean, .desc = TRUE)) %>%
+  ggplot(aes(x = genome, y = log2_CPM, fill = genome)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_fill_manual(values = c("tair10" = "#377EB8"),
+                    na.value = "grey70") +
+  labs(
+    x = "Genome (Allele)",
+    y = "log2(CPM + 1)",
+    title = "Allelic Expression by Variant",
+    fill = "Genome"
+  ) +
+  theme_bw(base_size = 16) +
+  theme(
+    strip.text = element_text(size = 15, face = "bold"),
+    axis.text = element_text(size = 15),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )+ylim(0,10)
+```
+
+
+### Get maternally expressed TEs 
+## Calculate maternal ratios 
+
+```{r}
+library(tidyr)
+## Reshape data 
+boxplot_data$acc <- ifelse(boxplot_data$genome=="tair10", "tair10", "accession")
+
+reshaped_data <- boxplot_data %>%
+  dplyr::select(sample_id, Variant, Genotype, ID, CPM, Accession,genome_annot) %>%
+  pivot_wider(
+    names_from = genome_annot,
+    values_from = CPM,
+    names_prefix = "CPM_"
+  )
+```
+
+```{r}
+# Calculate maternal ratios
+cpm_ratios <- reshaped_data %>%
+  dplyr::mutate(
+    total_TPM = CPM_accession + CPM_tair10,
+    tair10_ratio = ifelse(total_TPM == 0, NA, CPM_tair10 / total_TPM),
+    accession_ratio = ifelse(total_TPM == 0, NA, CPM_accession / total_TPM)
+  )
+
+# View results
+head(cpm_ratios)
+```
+## Plot ratios 
+```{r}
+average_ratios <- cpm_ratios %>%
+  dplyr::group_by(Genotype, ID) %>% # Group by genotype (Col, ddm1) and TE. Average for TE 
+  dplyr::summarise(avg_ratio = mean(tair10_ratio, na.rm = TRUE), .groups = "drop")
+
+## Average distribution of the TEs 
+ggplot(average_ratios, aes(x = avg_ratio)) +
+  geom_histogram(bins = 20, fill = "orange", color = "black", alpha = 0.7) +
+  geom_vline(data = filter(average_ratios, Genotype == "F1_ddm1"), 
+           aes(xintercept = 0.7), color = "red", linetype = "dashed", linewidth = 1) +
+  facet_wrap(~Genotype, scales = "free_y") +
+  theme_minimal(base_size = 15) +
+  labs(title = "",
+       x = "Average maternal ratio",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+## Visualize average ratios based on the TE 
+```{r}
+te_annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
+```
+
+```{r}
+cpm_paternal_with_annotation <- left_join(average_ratios,te_annotation, by=c("ID"="Transposon_Name"))
+#tpm_paternal_with_annotation_multimapped<- tpm_paternal_with_annotation[tpm_paternal_with_annotation$avg_ratio==0.5,]
+
+cpm_paternal_with_annotation %>% 
+  group_by(Transposon_Super_Family, Genotype) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x = Transposon_Super_Family, y = n)) +
+    geom_col() +
+    facet_wrap(~Genotype) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+cpm_paternal_with_annotation  %>%  filter(Genotype != "ct_col" & Genotype != "ddm1_ct") %>%  ggplot( aes(x = avg_ratio)) +
+  geom_histogram(bins = 20, fill = "orange", color = "black", alpha = 0.7) + 
+   #          aes(xintercept = 0.7), color = "red", linetype = "dashed", linewidth = 1) +
+  facet_wrap(~Transposon_Super_Family~Genotype, scales = "free_y") +
+  theme_bw() +
+  labs(title = "",
+       x = "Avg_ratio",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Heatmap visualization 
+```{r}
+library(ComplexHeatmap)
+library(tidyverse)
+library(circlize)
+
+boxplot_data_clean <- boxplot_data %>%
+  dplyr::distinct(sample_id, Variant, Genotype, ID, Accession, genome_annot, .keep_all = TRUE)
+
+## Calculate log2fc between ddm1 and col0 
+tes_upregulated <- boxplot_data_clean %>%
+  filter(genome_annot == "tair10") %>%  # or "accession" depending on which genome you want
+  dplyr::select(ID, Accession, Genotype, log2_CPM) %>%
+  pivot_wider(
+    names_from = Genotype,
+    values_from = log2_CPM,
+    values_fn = mean
+  ) %>%
+  mutate(log2FC = F1_ddm1 - F1_Col) %>%
+  filter(log2FC > 2)
+
+
+##Filter TEs to be 0.7 maternally expressed
+average_ratios_selected <- average_ratios[average_ratios$avg_ratio>=0.7,]
+
+te_mat <- boxplot_data$ID %in% average_ratios_selected$ID
+boxplot_data_mat_selected <- boxplot_data[te_mat,]
+
+boxplot_data_mat_selected_significant <- boxplot_data_clean$ID %in% tes_upregulated$ID
+boxplot_data_mat_selected_sig <-  boxplot_data_clean[boxplot_data_mat_selected_significant,]
+# Prepare heatmap data
+
+heatmap_data <- boxplot_data_clean %>% 
+  mutate(sample_genome = paste(sample_id, genome_annot, sep = "_")) %>%
+  dplyr::select(ID, sample_genome, log2_CPM) %>%
+ pivot_wider(names_from = sample_genome, values_from = log2_CPM) %>%
+  column_to_rownames("ID") %>%
+  as.matrix()
+
+# Create annotation with sorted order
+col_annotation <- boxplot_data_clean %>%
+  mutate(sample_genome = paste(sample_id, genome_annot, sep = "_")) %>%
+  dplyr::select(sample_genome, Genotype, Variant, genome_annot) %>%
+  distinct() %>%
+  arrange(
+    factor(Genotype, levels = c("F1_ddm1", "F1_Col", "ct_col", "ddm1_ct")),  # Genotype order
+    genome_annot == "tair10"  # Within each genotype: tair10 first, then accession
+  ) %>%
+  column_to_rownames("sample_genome")
+
+# Match order to heatmap columns
+heatmap_data <- heatmap_data[, rownames(col_annotation)]
+
+genome_colors <- c("accession" = "#E41A1C", "tair10" = "#377EB8")
+genotype_colors <- c("F1_Col" = "#66C2A5", "F1_ddm1" = "#E62727", "ct_col" = "#5D866C", "ddm1_ct" = "#FFD93D")
+
+# Create top annotation - genotype first (top), then genome (bottom)
+col_ha <- HeatmapAnnotation(
+    Genotype = col_annotation$Genotype,
+    'Mapped haplotype' = col_annotation$genome_annot,
+    col = list(
+        Genotype = genotype_colors,
+        'Mapped haplotype' = genome_colors
+    ),
+    annotation_name_gp = gpar(fontsize = 10)
+)
+
+# Create heatmap
+Heatmap(
+    heatmap_data,
+    name = "log2(CPM+1)",
+    top_annotation = col_ha,
+    show_row_names = FALSE,
+    show_column_names = FALSE,
+    cluster_rows = TRUE,
+    cluster_columns = FALSE,
+    clustering_distance_rows = "euclidean",
+    clustering_method_rows = "complete",
+    row_km_repeats = 1000,
+    show_row_dend = FALSE,
+    show_column_dend = FALSE,
+    column_title = "Samples",
+    row_title = "TE",
+    column_title_side = "bottom",
+    row_title_side = "left",
+    column_title_gp = gpar(fontsize = 12),
+    row_title_gp = gpar(fontsize = 12),
+    heatmap_legend_param = list(
+        title = "log2(CPM+1)",
+        direction = "vertical",
+        legend_height = unit(4, "cm")))
+```
+## Write output 
+```{r}
+write.csv2(boxplot_data_mat_selected_sig,"/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification_rsem/reshaped_allele_specific_expr_filtered_min10readsin5persamples_avg_maternal_ratiomorethan07_te_in_de_tes.csv", quote = F, row.names = F)
+```
+
+######################################
+##      Effect of the cross.        ##
+######################################
+
+```{r}
+head(boxplot_data)
+library(ggplot2)
+library(dplyr)
+
+col0_without_cross <- reshaped_data[reshaped_data$Accession=="6909" & reshaped_data$Genotype=="ddm1_ct",]
+col0_with_cross <- reshaped_data[reshaped_data$Accession!="6909" &  reshaped_data$Genotype=="F1_ddm1",]
+
+
+# Average across replicates first
+col0_without_cross_avg <- col0_without_cross %>%
+  group_by(ID) %>%
+  dplyr::summarise(CPM_tair10_without = mean(CPM_tair10, na.rm = TRUE), .groups = "drop")
+
+col0_with_cross_avg <- col0_with_cross %>%
+  group_by(ID, Accession) %>%
+  dplyr::summarise(CPM_tair10_with = mean(CPM_tair10, na.rm = TRUE), .groups = "drop")
+
+# Join
+col_with_without_cross <- inner_join(
+  col0_without_cross_avg, 
+  col0_with_cross_avg, 
+  by = "ID"
+)
+
+# Calculate statistics
+cross_effect <- col_with_without_cross %>%
+  group_by(Accession) %>%
+  dplyr::summarise(
+    n_TEs = n(),
+    correlation = cor(log2(CPM_tair10_without + 1), log2(CPM_tair10_with + 1), 
+                      use = "complete.obs"),
+    mean_log2FC = mean(log2(CPM_tair10_with + 1) - log2(CPM_tair10_without + 1)),
+    median_log2FC = median(log2(CPM_tair10_with + 1) - log2(CPM_tair10_without + 1)),
+    n_increased = sum((CPM_tair10_with + 1) > (CPM_tair10_without + 1)),
+    n_decreased = sum((CPM_tair10_with + 1) < (CPM_tair10_without + 1)),
+    pct_increased = 100 * n_increased / n_TEs,
+    pct_decreased = 100 * n_decreased / n_TEs
+  )
+
+ggplot(cross_effect, aes(x = correlation, y = reorder(Accession, correlation))) +
+  geom_point(size = 3) +
+  labs(x = "Correlation", y = "Accession") +
+  theme_bw(base_size = 16)
+
+print(cross_effect)
+
+# Visualize
+col_with_without_cross_filt <- col_with_without_cross[col_with_without_cross$CPM_tair10_without>0 | col_with_without_cross$CPM_tair10_with>0,]
+ggplot(col_with_without_cross_filt, 
+       aes(log2(CPM_tair10_without + 1), log2(CPM_tair10_with + 1))) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~ Accession) +
+  labs(x = "log2(CPM Col-0 selfed tair10 allele + 1)", 
+       y = "log2(CPM F1 tair10 allele + 1)",
+       title = "Effect of crossing Col-0 with different accessions") +
+  theme_bw()
+
+## Calculate FC in TE
+col_with_without_cross_filt$fc_te <- log2(col_with_without_cross_filt$CPM_tair10_with+1)- log2(col_with_without_cross_filt$CPM_tair10_without+1)
+
+ggplot(col_with_without_cross_filt, aes(x = fc_te)) +
+  geom_histogram(fill = "#2E86AB", color = "black") +
+  theme_bw(base_size = 14)+vline(-5)
+########################
+### Analyse abundance
+###############
+library(ggplot2)
+library(dplyr)
+
+# 1. Filter TEs with >2-fold increase (fc_te > 1)
+col_with_without_cross_filt_high <- col_with_without_cross_filt %>%
+  filter(fc_te < -5)
+
+# 2. Annotate with TE family information
+col_with_without_cross_filt_high_ann <- col_with_without_cross_filt_high %>%
+  left_join(te_annotation, by = c("ID" = "Transposon_Name"))
+
+# 3. Count accessions per TE and calculate percentage
+total_accessions <- n_distinct(col_with_without_cross_filt$Accession)
+
+te_accession_counts <- col_with_without_cross_filt_high_ann %>%
+  group_by(ID) %>%
+  dplyr::summarise(
+    n_accessions = n_distinct(Accession),
+    Transposon_Super_Family = first(Transposon_Super_Family)
+  ) %>%
+  mutate(
+    percent = (n_accessions / total_accessions) * 100,
+    ID_label = paste0(ID, " (", Transposon_Super_Family, ")")
+  ) %>%
+  filter(percent > 25) %>%
+  arrange(desc(percent))
+
+print(te_accession_counts)
+
+# 4. Plot: Bar plot of TEs by percentage
+ggplot(te_accession_counts, aes(x = reorder(ID, percent), y = percent)) +
+  geom_bar(stat = "identity", fill = "#2E86AB", color = "black") +
+  coord_flip() +
+  labs(x = "TE",
+       y = "% of Accessions with decreased Expression",
+       title = "TEs Increased in >25% of Accessions") +
+  theme_bw(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# 5. Plot: Point plot with superfamily labels
+ggplot(te_accession_counts, aes(x = percent, y = reorder(ID_label, percent))) +
+  geom_point(size = 3, color = "#2E86AB") +
+  labs(x = "% of Accessions with decreased Expression",
+       y = "TE (Superfamily)",
+       title = "TEs Increased Across Multiple Accessions") +
+  theme_bw(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 10))
+
+
+```
+## Compare to the methylation data
+```{r}
+meth_data <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/008_as_methylation/meth_levels/all_methylation_TE_combined.txt", header=T)
+
+acc_control_cross <- reshaped_data[reshaped_data$Accession!="6909" & reshaped_data$Genotype=="F1_Col",]
+acc_mutant_cross <- reshaped_data[reshaped_data$Accession!="6909" &  reshaped_data$Genotype=="F1_ddm1",]
+
+# Average across replicates first
+acc_control_cross_avg <- acc_control_cross %>%
+  group_by(ID) %>%
+  dplyr::summarise(CPM_accession_contr = mean(CPM_tair10, na.rm = TRUE), .groups = "drop")
+
+acc_mutant_cross_avg <- acc_mutant_cross %>%
+  group_by(ID, Accession) %>%
+  dplyr::summarise(CPM_accession_mutant = mean(CPM_tair10, na.rm = TRUE), .groups = "drop")
+
+# Join
+mutant_control_cross_accession <- inner_join(
+  acc_mutant_cross_avg, 
+  acc_control_cross_avg, 
+  by = "ID"
+)
+
+## Add methylation
+meth_data$ID <- gsub("_.*", "",meth_data$gene_id)
+mutant_control_cross_accession_with_methylation <- inner_join(mutant_control_cross_accession,meth_data, by=c("ID", "Accession"="accession") )
+```
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Scatterplot: CPM mutant vs control, faceted by accession, colored by mCG
+mutant_control_cross_accession_with_methylation_filtered <- mutant_control_cross_accession_with_methylation[mutant_control_cross_accession_with_methylation$CPM_accession_contr>0| mutant_control_cross_accession_with_methylation$CPM_accession_mutant>0,]
+
+ggplot(mutant_control_cross_accession_with_methylation_filtered, 
+       aes(x = log2(CPM_accession_contr+1), y = log2(CPM_accession_mutant+1), color = mCG)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~ Accession, scales = "free") +
+  scale_color_gradientn(colors = c("blue", "cyan", "yellow", "orange", "red"),
+                        name = "mCG\nLevel",
+                        limits = c(0, 1)) +
+  labs(x = "log 2 CPM TAIR10 F1 control cross", 
+       y = "log 2 CPM TAIR10 F1 ddm1 cross",
+       title = "CPM Mutant vs Control by Accession (Colored by mCG Methylation)") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+        axis.title = element_text(face = "bold", size = 12),
+        strip.text = element_text(face = "bold", size = 10),
+        axis.text = element_text(size = 8))
+
+```
+
+
+## PCA on each superfamily
+```{r}
+# Get unique superfamilies
+boxplot_data_mat_selected_superfamily <- left_join(boxplot_data_mat_selected,te_annotation, by=c("ID"="Transposon_Name"))
+superfamilies <- unique(boxplot_data_mat_selected_superfamily$Transposon_Super_Family)
+ 
+
+library(ggplot2)
+
+# 1. Prepare data matrix for PCA (samples as rows, TEs as columns)
+pca_data <- boxplot_data_mat_selected_superfamily %>%
+  dplyr::select(sample_id, ID, log2_CPM, genome_annot, Genotype, Variant) %>%
+  mutate(sample_genome = paste(sample_id, genome_annot, sep = "_")) %>%
+  dplyr::select(sample_genome, ID, log2_CPM, Genotype, Variant, genome_annot) %>%
+  pivot_wider(names_from = ID, values_from = log2_CPM, values_fill = 0)
+
+# 2. Extract metadata for coloring
+pca_metadata <- pca_data %>%
+  dplyr::select(sample_genome, Genotype, Variant, genome_annot)
+
+# 3. Prepare matrix for PCA (only numeric columns)
+pca_matrix <- pca_data %>%
+  dplyr::select(-sample_genome, -Genotype, -Variant, -genome_annot) %>%
+  as.matrix()
+
+rownames(pca_matrix) <- pca_data$sample_genome
+
+# 4. Perform PCA
+pca_result <- prcomp(pca_matrix, scale. = TRUE, center = TRUE)
+
+# 5. Extract PC scores and merge with metadata
+pca_scores <- as.data.frame(pca_result$x) %>%
+  rownames_to_column("sample_genome") %>%
+  left_join(pca_metadata, by = "sample_genome")
+
+# 6. Calculate variance explained
+variance_explained <- summary(pca_result)$importance[2, ] * 100
+
+# 7. Plot PCA colored by genotype
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = Genotype)) +
+  geom_point(size = 4, alpha = 0.8) +
+  theme_bw() +
+  labs(
+    title = "PCA of TE Expression (log2_CPM)",
+    x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance_explained[2], 1), "%)"),
+    color = "Genotype",
+    shape = "Mapped Haplotype"
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold")
+  )
+
+
+
+
+# Get TE loadings (contribution of each TE to PCs)
+pca_loadings <- as.data.frame(pca_result$rotation) %>%
+  rownames_to_column("ID") %>%
+  left_join(
+    boxplot_data_mat_selected_superfamily %>% 
+      dplyr::select(ID, Transposon_Family) %>% 
+      distinct(),
+    by = "ID"
+  )
+
+# Plot loadings colored by superfamily
+ggplot(pca_loadings, aes(x = PC1, y = PC2, color = Transposon_Family)) +
+  geom_point(alpha = 0.6, size = 2) +
+  theme_bw() +
+  labs(
+    title = "PCA Loadings: TE Contribution",
+    x = "PC1 Loading",
+    y = "PC2 Loading",
+    color = "TE Superfamily"
+  )
+```
+
+
+
+
+
+
+######################################
+## Presence-absence gene expression ##
+######################################
+```{r}
+# Extract genes 
+# Select genes  
+genes <- !grepl("AT[1-9]TE", reshaped_data_with_sampleinfo_filtered$ID)
+reshaped_data_with_sampleinfo_filtered_genes <- reshaped_data_with_sampleinfo_filtered[genes,]
+str(unique(reshaped_data_with_sampleinfo_filtered_genes$ID))
+#### gene analysis ####
+# Reshape the data for plotting
+
+# Prepare data: reshape to have genome as a variable for boxplot
+boxplot_data_genes <- reshaped_data_with_sampleinfo_filtered_genes %>%
+  dplyr::select(sample_id, Variant, Genotype, ID, genome, CPM, Accession) %>%
+  mutate(log2_CPM = log2(CPM + 1))
+
+# Filter out TEs where both accession and tair10 have CPM = 0
+boxplot_data_filtered_genes <- boxplot_data_genes %>%
+  group_by(sample_id, ID) %>%
+  filter(!(all(CPM == 0))) %>%  # Remove if all genomes have TPM = 0
+  ungroup()
+
+# Check how many rows removed
+cat("Original rows:", nrow(boxplot_data_genes), "\n")
+cat("Filtered rows:", nrow(boxplot_data_filtered_genes), "\n")
+cat("Rows removed:", nrow(boxplot_data_genes) - nrow(boxplot_data_filtered_genes), "\n")
+```
+## Make boxplot for genes 
+```{r}
+# Boxplot: genome (allele) on x-axis, faceted by Variant
+
+boxplot_data_filtered_genes$genome_name <- ifelse(boxplot_data_filtered_genes$genome!="tair10", "accession", "tair10")
+ggplot(boxplot_data_filtered_genes, aes(x = genome_name, y = log2_TPM, fill = genome_name)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_fill_manual(values = c("accession" = "#E41A1C", "tair10" = "#377EB8")) +
+  facet_wrap(~ Genotype) +
+  labs(
+    x = "Genome (Allele)",
+    y = "log2(CPM + 1)",
+    title = "Allelic Expression by Variant",
+    fill = "Genome"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 10, face = "bold"),
+    axis.text = element_text(size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+## Check Leandro's genes 
+```{r}
+## Read leandro's upstream genes affected by TE insertion 
+insertions_upstream_gene <- readxl::read_excel("/groups/nordborg/projects/ddm1_resilencing/dynamets/01_data/SPM_insertions_upstream_genes_leandro.xlsx")
+```
+## Calculate  presence for every accession
+```{r}
+insertions_upstream_gene_long <- insertions_upstream_gene %>%
+  pivot_longer(
+    cols = -c(Chr, Start_ins, Stop_ins, TE_family, Allele_freq, Chr_TSS, 
+              feature, Start_TSS, Stop_TSS, Orientation_gene, gene, Distance_to_TSS),
+    names_to = "Accession",
+    values_to = "Value", 
+    values_transform = list(Value=~as.numeric(na_if(.,"NA")))
+  )
+# Modify gene
+insertions_upstream_gene_long$gene_id <- gsub("ID=", "", insertions_upstream_gene_long$gene)
+insertions_upstream_gene_long$gene_id <- gsub( ";.*" , "", insertions_upstream_gene_long$gene_id)
+```
+## Get accessions with presence and absence
+```{r}
+insertions_upstream_gene_long$Value <- as.numeric(insertions_upstream_gene_long$Value)
+insertions_upstream_gene_long_presence_acc <- insertions_upstream_gene_long[insertions_upstream_gene_long$Value==1 & !is.na(insertions_upstream_gene_long$Value),] # Select only presence 
+insertions_upstream_gene_long_presence_acc$status <- "presence"
+
+insertions_upstream_gene_long_absence_acc <- insertions_upstream_gene_long[insertions_upstream_gene_long$Value==0 & !is.na(insertions_upstream_gene_long$Value),] # Select only absence 
+insertions_upstream_gene_long_absence_acc$status <- "absence"
+```
+## Connect to the expression dataset 
+```{r}
+# Reshape the data for plotting
+## Subset matrix to the present genes 
+leandro_g <- boxplot_data_filtered_genes$ID %in% boxplot_data_filtered_genes$ID
+data_long_filtered_genes_leandro_g <- boxplot_data_filtered_genes[leandro_g,]
+
+data_long_filtered_genes_leandro_g_acc <- data_long_filtered_genes_leandro_g[data_long_filtered_genes_leandro_g$genome!="tair10",]
+## Get mean expression 
+```
+## Maternal ratio for genes 
+```{r}
+## Check expression in presence and absence accessions
+presence_acc_intersect <- data_long_filtered_genes_leandro_g_acc %>% 
+  filter(Accession %in% insertions_upstream_gene_long_presence_acc$Accession)
+absence_acc_intersect <- data_long_filtered_genes_leandro_g_acc %>% 
+  filter(Accession %in% insertions_upstream_gene_long_absence_acc$Accession)
+## Combine dfs 
+presence_absence_df <- rbind(presence_acc_intersect,absence_acc_intersect)
+
+## Add information about TE families being inserted
+te_families_with_insertion <- insertions_upstream_gene_long %>% select(TE_family,gene_id)
+te_families_with_insertion <- unique(te_families_with_insertion)
+presence_absence_df_with_info <- inner_join(presence_absence_df, te_families_with_insertion, by=c("ID"="gene_id"))
+
+## Make a mean expression presence and absence 
+
+presence_absence_df_with_info_mean <- presence_absence_df_with_info %>% 
+  group_by( ID,Genotype, status,TE_family) %>% 
+  dplyr::summarise(
+    mean_expr_acc = mean(log2_CPM),
+    .groups = "drop"
+  ) 
+
+## Plot dependency
+presence_absence_df_with_info_mean %>% filter(Genotype=="F1_ddm1")%>%
+  ggplot(aes(x = status, y = mean_expr_acc)) +
+geom_boxplot()+facet_wrap(~TE_family)
+
+
+
+
+presence_absence_df_with_info_mean %>% 
+  filter(Genotype == "F1_Col") %>%
+  ggplot(aes(x = status, y = log2_CPM, fill = status)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  #geom_jitter(width = 0.2, alpha = 0.2, size = 0.5) +
+  facet_wrap(~ TE_family, scales = "free_y") +
+  scale_fill_manual(values = c("Presence" = "#E74C3C", "Absence" = "#3498DB")) +
+  labs(x = "TE Insertion Status", 
+       y = "Mean log2(CPM)",
+       title = "Gene Expression: TE Presence vs Absence (F1_ddm1)",
+       subtitle = "Each point = one accession") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", size = 14),
+        axis.title = element_text(face = "bold", size = 12),
+        strip.text = element_text(face = "bold", size = 10))
+
+
+
+
+presence_absence_df_with_info_mean %>% filter(ID=="AT1G33760")%>%
+  ggplot(aes(x = status, y = mean_expr_acc, fill = status)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = 16, outlier.size = 1.5) +
+  geom_jitter(alpha=0.2)+
+  facet_wrap(~TE_family, scales = "free_y") +
+  labs(
+    title = "Mean Expression Accessibility by Status and TE Family",
+    x = "Status",
+    y = "Mean Expression Accessibility",
+    fill = "Status"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "gray90", color = "gray50"),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+presence_absence_df_with_info_mean %>% filter(ID=="AT1G33760") %>% ggplot()
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Calculate mean fold change between presence and absence for each gene/TE/genotype
+heatmap_data <- presence_absence_df_with_info_mean %>%
+  group_by(ID, TE_family, Genotype) %>%
+  dplyr::summarise(
+    mean_presence = mean(mean_expr_acc[status == "presence"], na.rm = TRUE),
+    mean_absence = mean(mean_expr_acc[status == "absence"], na.rm = TRUE),
+    .groups = "drop"
+  )
+
+heatmap_data_check <- heatmap_data[heatmap_data$TE_family=="ATENSPM10",]
+heatmap_data <- na.omit(heatmap_data)
+heatmap_data$log2_fc <- heatmap_data$mean_presence-heatmap_data$mean_absence
+heatmap_data_filt <-heatmap_data[heatmap_data$log2_fc> -9,]
+# Create heatmap
+heatmap_data_check %>% filter(Genotype=="F1_ddm1" | Genotype=="F1_Col") %>%
+  ggplot(aes(x = TE_family, y = ID, fill = log2_fc)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  facet_wrap(~Genotype, scales = "free") +
+  scale_fill_gradient2(
+    low = "blue", 
+    mid = "white", 
+    high = "red",
+    midpoint = -0,
+    name = "Presence expr - Absence expr"
+  ) +
+  labs(
+    title = "Mean Expression Accessibility: Presence vs Absence",
+    x = "TE Family",
+    y = "Gene ID"
+  ) +
+  theme_minimal(base_size = 18) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+    axis.text.y = element_text(size = 14),
+    strip.background = element_rect(fill = "gray90", color = "gray50"),
+    strip.text = element_text(face = "bold", size = 14),
+    panel.grid = element_blank(),
+    legend.position = "right"
+  )
+
+# Reshape data to have F1_Col and F1_ddm1 log2_fc in separate columns
+heatmap_scatter <- heatmap_data_check %>%
+  select(ID, TE_family, Genotype, log2_fc) %>%
+  pivot_wider(names_from = Genotype, values_from = log2_fc) %>%
+  drop_na()  # Remove rows where either genotype is missing
+
+# Create scatterplot
+ggplot(heatmap_scatter, aes(x = F1_Col, y = F1_ddm1)) +
+  geom_point(alpha = 0.5, size = 3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  theme_bw(base_size = 14) +
+  labs(
+    x = "Log2 FC (F1_Col)",
+    y = "Log2 FC (F1_ddm1)",
+    title = "Comparison of TE Effect on Expression",
+    subtitle = "Log2 Fold Change: Presence vs Absence"
+  )
+
+
+```
+
+## Get coordinates of the genes with upstream insertion 
+```{r}
+gene_table <- data.frame(c(insertions_upstream_gene$gene, insertions_upstream_gene$Orientation_gene))
+## Read annotation
+annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_from_tair10_transposons_from_araport.gff")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

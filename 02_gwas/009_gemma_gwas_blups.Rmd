@@ -1,0 +1,748 @@
+---
+title: "009_gemma_gwas_blups"
+output: html_document
+date: "2025-03-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read associations
+```{r}
+library(data.table)
+library(qqman)
+
+gemma_res <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/rank_transform/with_K/average_ddm1_ranktr_maf005.assoc.txt" ,header=T)
+gemma_res$r_squared <- 2*gemma_res$af * (1-gemma_res$af)* gemma_res$beta^2
+
+N <- 230
+
+gemma_res$pve <- (2 * gemma_res$beta^2 * gemma_res$af * (1 - gemma_res$af)) / 
+                 (2 * gemma_res$beta^2 * gemma_res$af * (1 - gemma_res$af) + 
+                  gemma_res$se^2 * 2 * N * gemma_res$af * (1 - gemma_res$af))
+```
+
+```{r}
+bonferroni_threshold <- 0.05/nrow(gemma_res)
+par(mar = c(5, 5, 2, 2))  # Adjust margins to give more space
+qq(gemma_res$p_wald, 
+   cex.axis = 2, 
+   cex.lab = 2)
+
+
+par(mar = c(5, 5, 4, 2))  # Increase left margin (second value)
+manhattan(gemma_res, chr = "chr", bp = "ps", snp = "rs", p = "p_wald", 
+         col = c("#1A1A1A", "#838B8B"), genomewideline = F, suggestiveline = F,
+         ylim = c(0, 10), cex.axis = 2, cex.lab = 1.8,
+         xlab = "Chromosome", ylab = expression(-log[10](P)))
+abline(h = 7.5, col = "red", lty = 2)
+abline(h = -log10(bonferroni_threshold), col = "black", lty = 2)
+#text(x = 3, y = 11, labels = "F1 ddm1 BLUPs - F1 Col BLUPs,st values;LTR_Copia", cex = 1.5, col = "black", pos = 4)
+
+gemma_res[order(-log10(gemma_res$p_wald), na.last = TRUE,decreasing = TRUE), ]
+```
+## Get zoomed in peak 
+```{r}
+library(dplyr)
+gemma_res$rs <- paste0( "rs", gemma_res$ps,"_",gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs,chr, ps, p_wald)
+colnames(res) <- c("SNP","CHR","BP","P")
+
+res_selected <-res[res$CHR==5,]
+
+manhattan(res_selected, 
+          cex = 1,    
+          suggestiveline = 7.5,
+          genomewideline = F,
+          xlim = c(847439 - 100000, 847439 + 100000),
+          xlab = "(847439 - 100000, 847439 + 100000)")
+```
+
+## Map to the gene 
+```{r}
+tes_tari10 <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_genes_transposons.gtf")
+genes <- tes_tari10 %>% select(V1,V3,V4,V5,V9)
+colnames(genes) <-c("chromosome_name", "ensembl_gene_id", "start_position","end_position", "description")
+# Get gene id 
+# Extract the ID part after "ID=" and before the first semicolon
+genes$chromosome_name <- gsub("Chr", "",genes$chromosome_name)
+genes$chromosome_name <- as.numeric(genes$chromosome_name)
+```
+## Annotate SNPs with genes
+```{r}
+
+peak_snps <- gemma_res %>%
+  filter(chr == 5,
+         ps >= 847439 - 100000,
+         ps <= 847439 + 100000) %>%
+  mutate(neg_log10_P = -log10(p_wald))
+
+setDT(peak_snps)
+setDT(genes)
+
+peak_snps[, `:=`(start = ps, end = ps)]
+setkey(genes, chromosome_name, start_position, end_position)
+
+# Find overlaps with genes and SNPs 
+snps_annotated <- foverlaps(
+  peak_snps[, .(rs, chr, ps, p_wald, beta, pve, neg_log10_P, start, end,af)],
+  genes[chromosome_name == 5 & 
+        start_position <= 847439 + 100000 & 
+        end_position   >= 847439 - 100000,
+        .(chromosome_name, start_position, end_position, description)],
+  by.x = c("chr", "start", "end"),
+  by.y = c("chromosome_name", "start_position", "end_position"),
+  type = "within",
+  nomatch = NA
+)
+snps_annotated <- na.omit(snps_annotated) 
+```
+## Get gene labels filtered 
+```{r}
+# Add gene label
+snps_annotated <- snps_annotated %>%
+  mutate(gene_id = sub('.*gene_id "([^"]+)".*', "\\1", description),
+         gene_id = ifelse(is.na(description), "intergenic", gene_id))
+
+lead_per_gene <- snps_annotated %>%
+  ungroup() %>%
+  arrange(desc(pve)) %>%
+  select(gene_id, rs, ps, p_wald, neg_log10_P, beta, pve,af)
+
+lead_per_gene <- lead_per_gene[lead_per_gene$neg_log10_P>4,]
+lead_per_gene <- unique(lead_per_gene)
+write.csv2(lead_per_gene,"/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/peaks_chr5_rank_expression_phenotype.csv", quote = F, row.names = F)
+```
+
+
+
+
+
+## Show the impact of the genes in the region
+```{r}
+library(data.table)
+library(dplyr)
+
+peak_chr   <- 5
+peak_start <- 847439 - 100000
+peak_end   <- 847439 + 100000
+
+# ── 2. Get all SNPs in the peak with effect sizes ────────────────────────────
+peak_snps <- gemma_res %>%
+  filter(chr == peak_chr,
+         ps >= peak_start,
+         ps <= peak_end) %>%
+  mutate(neg_log10_P = -log10(p_wald))
+
+# ── 3. Get all genes in the peak window ──────────────────────────────────────
+peak_genes <- genes %>%
+  filter(chromosome_name == peak_chr,
+         start_position <= peak_end,
+         end_position   >= peak_start)
+
+# ── 4. For each gene, find the lead SNP (lowest p-value) ─────────────────────
+setDT(peak_snps)
+setDT(peak_genes)
+
+peak_snps[, `:=`(start = ps, end = ps)]
+setkey(peak_genes, chromosome_name, start_position, end_position)
+
+snps_annotated <- foverlaps(
+  peak_snps[, .(rs, chr, ps, p_wald, beta, se, pve, neg_log10_P, start, end)],
+  peak_genes[, .(chromosome_name, start_position, end_position, description)],
+  by.x = c("chr", "start", "end"),
+  by.y = c("chromosome_name", "start_position", "end_position"),
+  type = "within",
+  nomatch = NA
+)
+
+# ── 5. Lead SNP per gene ──────────────────────────────────────────────────────
+lead_per_gene <- snps_annotated %>%
+  group_by(description) %>%
+  slice_min(p_wald, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(p_wald) %>%
+  select(description, rs, ps, p_wald, neg_log10_P, beta, pve)
+
+print(lead_per_gene, n = 50)
+```
+
+
+```{r}
+library(data.table)
+setDT(res_selected)
+setDT(genes)
+
+# Set keys for overlap join
+setkey(genes, chromosome_name, start_position, end_position)
+
+# Overlap join: find gene for each SNP
+res_with_annotation <- foverlaps(
+  res_selected[, .(SNP, CHR, BP, P, neg_log10_P, cluster,
+                   start = BP, end = BP)],  # SNP is a point → start=end=BP
+  genes[, .(chromosome_name, start_position, end_position, description)],
+  by.x = c("CHR", "start", "end"),
+  by.y = c("chromosome_name", "start_position", "end_position"),
+  type = "within",
+  nomatch = NA  # keep SNPs with no overlapping gene
+)
+
+res_with_annotation %>%
+  filter(SNP %in% highlight_snps)
+```
+
+
+
+
+## OLD code
+
+
+## Proximity to known targets 
+```{r}
+gemma_res$rs <- paste0( "rs", gemma_res$ps,"_",gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs,chr, ps, p_wald)
+colnames(res) <- c("SNP","CHR","BP","P")
+
+snps_of_interest <- res[
+  (res$CHR == "1" & res$BP > 17886036 & res$BP < 17892632) | #AGO1
+  (res$CHR == "2" & res$BP > 16714460 & res$BP < 16723718)| # NRPE1
+   (res$CHR == "1" & res$BP > 11188293 & res$BP < 11192573) | #AGO3
+   (res$CHR == "4" & res$BP > 16336291 & res$BP < 16340314) | #CDCA7a
+   (res$CHR == "4" & res$BP > 10414428 & res$BP < 10421209) |#CMT2 
+   (res$CHR == "5" & res$BP > 26648897 & res$BP < 26653191)  | #DDM1
+    (res$CHR == "5" & res$BP > 7187096 & res$BP < 7189696)  | #AT5G21140
+    (res$CHR == "5" & res$BP > 7192239 & res$BP < 7198381)  |
+    (res$CHR == "5" & res$BP > 19932114 & res$BP <19938470 ) | #MET1
+    (res$CHR == "5" & res$BP > 15837178 & res$BP <15840678 ),] #VIM3
+
+snps_of_interest <- snps_of_interest$SNP
+
+par(mar = c(5, 6, 4, 2))
+
+
+manhattan(res, 
+          cex = 1,    
+          highlight = snps_of_interest,
+          suggestiveline = 7.5,
+          genomewideline = FALSE)
+abline(h = bonferroni_threshold, col = "red", lty = 2)
+
+```
+
+## Get significant interval 
+```{r}
+genes_tair10_significant <- gemma_res[-log10(gemma_res$p_wald)>1,]
+genes_tair10_significant <-genes_tair10_significant[genes_tair10_significant$chr==4,]
+genes_tair10_significant[order(-log10(genes_tair10_significant$p_wald), decreasing = TRUE), ]
+```
+
+```{r}
+# Your example - filtering by position interval
+genes_tair10_significant_to_check <- genes_tair10_significant[
+  genes_tair10_significant$ps > 7192239 & genes_tair10_significant$ps < 7198381
+]
+genes_tair10_significant_to_check 
+
+
+
+genes_tair10_significant_to_check <- genes_tair10_significant_to_check %>%
+  arrange(p_wald)
+
+head(genes_tair10_significant_to_check)
+```
+
+
+```{r}
+bonferroni_threshold <- 0.05/nrow(gemma_res)
+gemma_res$rs <- paste0("rs", gemma_res$ps, "_", gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs, chr, ps, p_wald)
+colnames(res) <- c("SNP", "CHR", "BP", "P")
+
+# Fix the missing < operator here
+chr_target <- 5
+center_pos <- 21207097
+window <- 15000
+
+snps_of_interest <- res[
+  res$CHR == chr_target & 
+  res$BP >= (center_pos - window) & 
+  res$BP <= (center_pos + window), ]
+snps_of_interest <-snps_of_interest$SNP
+
+par(mar = c(5, 6, 4, 2))
+
+manhattan(res, 
+          cex = 1,    
+          highlight = snps_of_interest,
+          suggestiveline = -log10(bonferroni_threshold),  # Use bonf thereshold 
+          genomewideline = FALSE)
+# Remove the abline() call
+```
+
+## Zoom in peak 
+```{r}
+gemma_res$rs <- paste0( "rs", gemma_res$ps,"_",gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs,chr, ps, p_wald)
+colnames(res) <- c("SNP","CHR","BP","P")
+
+res_selected <-res[res$CHR==5,]
+
+manhattan(res_selected, 
+          cex = 1,    
+          suggestiveline = 7.5,
+          genomewideline = F,
+          xlim = c(21207097 - 10000, 21207097 + 10000),
+          xlab = "(26653191 - 50000, 26653191 + 50000")
+```
+
+## ### Enrichment ###
+
+## Enrichment 
+```{r}
+library(dplyr)
+library(data.table)
+
+# ============================================
+# 1. PREPARE SNP DATA
+# ============================================
+gemma_res$rs <- paste0("rs", gemma_res$ps, "_", gemma_res$chr)
+
+region_start <- 5197151 - 50000
+region_end <- 5197151 + 50000
+
+res <- gemma_res %>% 
+  filter(chr == 5, 
+         ps >= region_start, 
+         ps <= region_end) %>%
+  select(rs, chr, ps, p_wald) %>%
+  rename(SNP = rs, CHR = chr, BP = ps, P = p_wald)
+# Optional: Manhattan plot
+# manhattan(res, cex = 1, suggestiveline = 7.5, genomewideline = FALSE,
+#           xlim = c(10957887 - 50000, 10957887 + 50000))
+
+# ============================================
+# 2. LOAD GENE ANNOTATIONS
+# ============================================
+gff <- fread("/groups/nordborg/common_data/TAIR10/TAIR10_gff3/TAIR10_GFF3_genes.gff")
+
+gene_coords <- gff[V3 == "gene", .(
+  gene_id = gsub(".*ID=([^;]+).*", "\\1", V9),
+  chr = as.integer(gsub("Chr", "", V1)),
+  start = V4,
+  end = V5
+)]
+
+# ============================================
+# 3. LOAD A PRIORI GENES
+# ============================================
+apriori_genes <- fread("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes.txt",
+                       col.names = c("gene", "tair_id"))
+
+apriori_genes <- apriori_genes %>%
+  inner_join(gene_coords, by = c("tair_id" = "gene_id"))
+
+# ============================================
+# 4. DEFINE PEAK REGIONS
+# ============================================
+window_size <- 0
+
+peak_regions <- res %>%
+  mutate(
+    peak_start = pmax(region_start, BP - window_size),
+    peak_end = pmin(region_end, BP + window_size)
+  )
+
+# ============================================
+# 5. FIND GENES IN PEAKS
+# ============================================
+# Helper function to check overlap
+overlaps <- function(gene_start, gene_end, peak_start, peak_end) {
+  gene_start <= peak_end & gene_end >= peak_start
+}
+
+genes_in_peaks <- gene_coords %>%
+  inner_join(peak_regions, by = c("chr" = "CHR")) %>%
+  filter(overlaps(start, end, peak_start, peak_end)) %>%
+  pull(gene_id) %>%
+  unique()
+
+apriori_in_peaks <- apriori_genes %>%
+  inner_join(peak_regions, by = c("chr"="CHR")) %>%
+  filter(overlaps(start, end, peak_start, peak_end))
+
+# ============================================
+# 6. FISHER'S EXACT TEST
+# ============================================
+a <- sum(apriori_genes$tair_id %in% genes_in_peaks)  # A priori in peak
+b <- nrow(apriori_genes) - a                          # A priori not in peak
+c <- length(genes_in_peaks) - a                       # Other genes in peak
+d <- nrow(gene_coords) - length(genes_in_peaks) - b  # Other genes not in peak
+
+contingency <- matrix(c(a, b, c, d), nrow = 2,
+                     dimnames = list(c("A priori", "Other"),
+                                   c("In peak", "Not in peak")))
+
+fisher_result <- fisher.test(contingency, alternative = "greater")
+
+# ============================================
+# 7. RESULTS
+# ============================================
+cat("\n=== CONTINGENCY TABLE ===\n")
+print(contingency)
+
+cat("\n=== ENRICHMENT RESULTS ===\n")
+cat("Total genes:", nrow(gene_coords), "\n")
+cat("Genes in peaks:", length(genes_in_peaks), "\n")
+cat("A priori genes in peaks:", a, "/", nrow(apriori_genes), "\n")
+cat("Fold enrichment:", round(a / ((nrow(apriori_genes) / nrow(gene_coords)) * length(genes_in_peaks)), 2), "×\n")
+cat("P-value:", format.pval(fisher_result$p.value, digits = 3), "\n")
+cat(ifelse(fisher_result$p.value < 0.05, "\n✓ SIGNIFICANT", "\n✗ NOT SIGNIFICANT"), "\n")
+
+if(nrow(apriori_in_peaks) > 0) {
+  cat("\nA priori genes found:\n")
+  print(apriori_in_peaks[, .(gene, tair_id, chr, start, end)])
+}
+```
+
+
+
+### OLD
+
+
+
+## Get genes with coordinates
+```{r}
+tes_tari10 <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_genes_transposons.gtf")
+tes_tari10 <- tes_tari10 %>% select(V1,V3,V4,V5,V9)
+colnames(tes_tari10) <-c("chromosome_name", "ensembl_gene_id", "start_position","end_position", "description")
+# Get gene id 
+# Extract the ID part after "ID=" and before the first semicolon
+tes_tari10$chromosome_name <- gsub("Chr", "",tes_tari10$chromosome_name)
+```
+##Map effect of the top genes 
+```{r}
+library(biomaRt)
+library(dplyr)
+
+# Connect to the plants mart and select the Arabidopsis thaliana dataset
+plants_mart <- useMart("plants_mart", host = "plants.ensembl.org")
+tair10 <- biomaRt::useDataset("athaliana_eg_gene", mart = plants_mart)
+
+# Retrieve gene annotation data
+annotation_tair10 <- getBM(
+  attributes = c(
+    "chromosome_name",
+    "start_position",
+    "end_position",
+    "gene_biotype",
+    "ensembl_gene_id",
+    "description"
+  ),
+  mart = tair10
+)
+
+tes_tari10$gene_biotype <- "transposon"
+annotation_tair10$chromosome_name <- gsub("Chr", "",annotation_tair10$chromosome_name)
+# Now rbind
+annotation_tair10_with_tes <- rbind(tes_tari10, annotation_tair10)
+# Write as output
+write.table(annotation_tair10_with_tes, "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_tes_with_annotation_for_mapping.csv", quote = F, row.names = F)
+```
+
+
+```{r}
+# Create a vector of SNPs/positions to highlight
+highlight_positions <- c(17992544, 17992644)  # or the range
+highlight_snps <- res_selected$SNP[res_selected$BP %in% 17992544:17992644] 
+
+manhattan(res_selected, 
+          cex = 1,    
+          suggestiveline = 7.5,
+          genomewideline = F,
+          xlim = c(17995901 - 60000, 17995901 + 60000),
+          xlab = "LTR Gypsy; 17995901 - 50000, 17995901 + 50000",
+          highlight = highlight_snps)
+
+res_selected$plog10 <- -log10(res_selected$P)
+```
+## Get genes in the interval
+```{r}
+filtered_data <- gemma_res[gemma_res$ps >= 17995901 - 60000 & gemma_res$ps <= 17995901 + 60000 & gemma_res$chr==2, ]
+```
+
+## Get genes under the peak 
+```{r}
+# Ensure variables are defined
+max_upstream_distance <- 1  # Example value
+max_downstream_distance <- 1  # Example value
+# Initialize the list
+snps_near_genes <- list()
+# Ensure consistent data types
+gemma_res$p_wald <- as.numeric(gemma_res$p_wald)
+significant_snps <- gemma_res[-log10(gemma_res$p_wald)>5,]
+#significant_snps <-filtered_data
+significant_snps$chr <- as.numeric(significant_snps$chr)
+genes_tair10$chr <- as.numeric(genes_tair10$chr)
+
+# Loop through each SNP
+for (i in 1:nrow(significant_snps)) {
+  snp <- significant_snps[i, ]
+  # Filter genes on the same chromosome
+  genes_on_chr <- genes_tair10[genes_tair10$chr == snp$chr, ]
+  
+  # Check if genes_on_chr is not empty
+  if (nrow(genes_on_chr) > 0) {
+    # Check if SNP is near or inside a gene
+    is_near_or_inside_gene <- (genes_on_chr$start - max_upstream_distance <= snp$ps & snp$ps <= genes_on_chr$stop + max_downstream_distance) |
+      (genes_on_chr$start <= snp$ps & snp$ps <= genes_on_chr$stop)
+    
+    if (any(is_near_or_inside_gene)) {
+      # Extract relevant genes
+      temp_df <- genes_on_chr[is_near_or_inside_gene, ]
+      temp_df$snp_position <- snp$ps
+      temp_df$chromosome <- snp$chr
+      temp_df$af <- snp$af
+      temp_df$variance_explained <- snp$r_squared
+      temp_df$pval <- ifelse(snp$p_wald > 0, -log10(snp$p_wald), NA)
+      
+      # Add to the list
+      snps_near_genes[[i]] <- temp_df
+    } else {
+      snps_near_genes[[i]] <- NULL
+    }
+  } else {
+    snps_near_genes[[i]] <- NULL
+  }
+}
+
+# Combine all non-NULL data frames into a single data frame
+snps_near_genes_df <- do.call(rbind, lapply(snps_near_genes, function(df) {
+  if (is.null(df)) return(NULL)  # Skip NULL elements
+  df
+}))
+
+snps_near_genes_df <- unique(snps_near_genes_df)
+snps_near_genes_df <-snps_near_genes_df[snps_near_genes_df$chr==4,]
+#write.table(snps_near_genes_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/output/significant_snps1kb_fromgene.csv", quote = F, sep="\t", row.names = F)
+```
+
+## Upload targets for silencing
+```{r}
+apriori_genes <- read.csv("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes.txt", sep="\t", header=F)
+colnames(apriori_genes) <-c("gene", "tair_id")
+apriori_genes_with_coordinates <- inner_join(apriori_genes,genes_tair10, by=c("tair_id"="gene_id"))
+```
+## Get silencing target genes under the peak 
+```{r}
+peak <- apriori_genes_with_coordinates[apriori_genes_with_coordinates$start >= 17940000 & apriori_genes_with_coordinates$stop <= 18040000 & apriori_genes_with_coordinates$chr==2,]
+```
+## Highligh targets for silencing
+```{r}
+gemma_res$rs <- paste0( "rs", gemma_res$ps,"_",gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs,chr, ps, p_wald)
+colnames(res) <- c("SNP","CHR","BP","P")
+
+snps_of_interest <- res[
+  (res$CHR == "1" & res$BP > 17886036 & res$BP < 17892632) | #AGO1
+  (res$CHR == "2" & res$BP > 16714460 & res$BP < 16723718)| # NRPE1
+   (res$CHR == "1" & res$BP > 11188293 & res$BP < 11192573) | #AGO3
+   (res$CHR == "4" & res$BP > 16336291 & res$BP < 16340314) | #CDCA7a
+    (res$CHR == "4" & res$BP > 10414428 & res$BP < 10421209) |#CMT2
+   (res$CHR == "5" & res$BP > 26648897 & res$BP < 26653191)  | #DDM1
+    (res$CHR == "5" & res$BP > 19932114 & res$BP <19938470 ) | #MET1
+    (res$CHR == "5" & res$BP > 15837178 & res$BP <15840678 ),] #VIM3
+
+snps_of_interest <- snps_of_interest$SNP
+
+res <- res[res$P>0,]
+res <- res[res$P!="Inf",]
+
+par(mar = c(5, 6, 4, 2))
+
+
+manhattan(res, 
+          cex = 1,    
+          highlight = snps_of_interest,
+          suggestiveline = 7.5,
+          genomewideline = FALSE)
+abline(h = bonferroni_threshold, col = "red", lty = 2)
+
+# QQ plot
+qq(res$P, main = "QQ plot of P-values")
+
+#gemma_results_avg_1 <-res[res$CHR=="4" & res$BP>8481691-10000 & res$BP<8481691+10000 ,]
+
+#highlight <- gemma_results_avg_1[-log10(gemma_results_avg_1$P)>5.2,]
+#highlight_snps <- highlight$SNP
+
+library(scales)
+#manhattan(gemma_results_avg_1, 
+#         cex = 1,    
+#          suggestiveline = 7.5,
+#          genomewideline = F,
+#         xlim = c(8481691-10000,8481691+10000 ))
+
+
+#annotation_tair10_filtered <- annotation_tair10[annotation_tair10$chromosome_name==4 & annotation_tair10$start_position>=8481691-10000  & annotation_tair10$end_position<=8481691+10000,]
+
+
+#write.csv2(annotation_tair10_filtered, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/peaks_investigation/annotation_tair10_filtered_chr4_8471691_8491691.csv", quote = F, row.names = F)
+```
+##Map effect of the top genes 
+```{r}
+library(biomaRt)
+library(dplyr)
+
+# Connect to the plants mart and select the Arabidopsis thaliana dataset
+plants_mart <- useMart("plants_mart", host = "plants.ensembl.org")
+tair10 <- biomaRt::useDataset("athaliana_eg_gene", mart = plants_mart)
+
+# Retrieve gene annotation data
+annotation_tair10 <- getBM(
+  attributes = c(
+    "chromosome_name",
+    "start_position",
+    "end_position",
+    "gene_biotype",
+    "ensembl_gene_id",
+    "external_gene_name",
+    "description"
+  ),
+  mart = tair10
+)
+
+# Remove "Chr" prefix if present
+annotation_tair10$chromosome_name <- gsub("Chr", "", annotation_tair10$chromosome_name)
+
+
+## Intersect with CMT2 
+annotation_tair10_filtered_intersected <- inner_join(annotation_tair10_filtered, cmt2_list, by=c("ensembl_gene_id"="V1"))
+##
+```
+## Select genes of intereset 
+```{r}
+significance_threshold <- 4 ## Needs to be adjusted 
+significant_snps <- gemma_res[(-log10(gemma_res$p_wald)) >significance_threshold, ]
+head(significant_snps)
+#significant_snps <-significant_snps[significant_snps$chr=="4", ]
+```
+## Map SNPs to the genes 
+```{r}
+max_upstream_distance <- 100  # Adjust as necessary
+max_downstream_distance <- 100  # Adjust as necessary
+snps_near_genes <- vector("list", length = nrow(significant_snps))
+# Loop through each SNP to find if it's inside, upstream, or downstream of any gene
+for (i in 1:nrow(significant_snps)) {
+  snp <- significant_snps[i, ]
+  genes_on_chr <- annotation_tair10[annotation_tair10$chromosome_name == snp$chr, ]
+  is_near_or_inside_gene <- (genes_on_chr$start_position - max_upstream_distance <= snp$ps & snp$ps <= genes_on_chr$end_position + max_downstream_distance) |
+    (genes_on_chr$start_position <= snp$ps & snp$ps <= genes_on_chr$end_position)
+  
+  if (any(is_near_or_inside_gene)) {
+    temp_df <- genes_on_chr[is_near_or_inside_gene, ]
+    temp_df$snp_position <- snp$ps
+    temp_df$chromosome <- snp$chr 
+    temp_df$af <- snp$af
+    temp_df$variance_explained <- snp$r_squared
+    temp_df$pval <- -log10(snp$p_wald)
+    snps_near_genes[[i]] <- temp_df
+  } else {
+    snps_near_genes[[i]] <- NULL
+  }
+}
+
+snps_near_genes_df <- do.call(rbind, lapply(snps_near_genes, function(df) {
+  if (is.null(df)) return(NULL)
+  df
+}))
+
+
+snps_near_genes_df$description <- NULL
+#write.table(snps_near_genes_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/output/significant_snps1kb_fromgene.csv", quote = F, sep="\t", row.names = F)
+```
+## PCA on the certain region
+```{r}
+library(vcfR)
+library(adegenet)
+library(ggplot2)
+library(SNPRelate)
+```
+
+```{r}
+# Extract PCA scores
+snpgdsVCF2GDS("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/selected_region_5400000-5440000.vcf", "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/selected_region_5400000-5440000.gds", method = "biallelic.only")
+
+# Open the GDS file
+genofile <- snpgdsOpen("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/selected_region_5400000-5440000.gds")
+```
+## Read sample file 
+```{r}
+metainformation <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/metainformtaion_accessions.txt", sep="\t", header=T)
+metainformation <- metainformation %>% dplyr::select(accession.ID,Admixture.Groupe,country)
+
+
+phenotype <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam", sep="\t", header=F)
+#phenotype$rep1 <- phenotype$V5-phenotype$V2
+#phenotype$rep2 <- phenotype$V6-phenotype$V3
+#phenotype$rep3 <- phenotype$V7-phenotype$V4
+phenotype_sum <- phenotype %>% dplyr::select(V2,V6,V7,V8,V9,V10)
+colnames(phenotype_sum) <- c("sample", "rep1", "rep2", "rep3", "rep4", "rep5")
+phenotype_sum[phenotype_sum == "-9"] <- NaN
+phenotype_sum$rep1 <- as.numeric(phenotype_sum$rep1)
+phenotype_sum$rep2 <- as.numeric(phenotype_sum$rep2)
+phenotype_sum$rep3 <- as.numeric(phenotype_sum$rep3)
+phenotype_sum$rep4 <- as.numeric(phenotype_sum$rep4)
+phenotype_sum$rep5 <- as.numeric(phenotype_sum$rep5)
+```
+
+
+```{r}
+# Run PCA
+pca <- snpgdsPCA(genofile, num.thread = 2, autosome.only = FALSE)
+
+# Remove NA values from eigenvalues
+eigenvals_clean <- pca$eigenval[!is.na(pca$eigenval)]
+
+# Calculate percentage variance explained (using only non-NA eigenvalues)
+percent_var <- (eigenvals_clean / sum(eigenvals_clean)) * 100
+# Extract PCA results
+pca_scores <- data.frame(
+  PC1 = pca$eigenvect[,1],
+  PC2 = pca$eigenvect[,2],
+  Sample = pca$sample.id
+)
+
+metainformation$accession.ID <- as.numeric(metainformation$accession.ID )
+pca_scores$Sample <- as.numeric(pca_scores$Sample)
+
+pca_scores_with_metainfo <- inner_join(metainformation,pca_scores, by=c("accession.ID"="Sample"))
+pca_scores_with_metainfo_phenotype <- inner_join(phenotype_sum,pca_scores_with_metainfo, by=c("sample"="accession.ID"))
+
+sampleData = read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/filtered_data_wo_misclustered_2_repl.txt", header=T)
+
+pca_scores_with_metainfo_phenotype_sampledata <- inner_join(pca_scores_with_metainfo_phenotype,sampleData, by=c("sample"="Accession"))
+ggplot(pca_scores_with_metainfo_phenotype_sampledata, aes(x = PC1, y = PC2, color=Sequencing_date)) +
+  geom_point() +
+  labs(
+    x = sprintf("PC1 (%.2f%%)", percent_var[1]),  # Variance for PC1
+    y = sprintf("PC2 (%.2f%%)", percent_var[2]),  # Variance for PC2
+    title = "PCA with Variance Explained"
+  ) +
+  theme_minimal()
+
+```
+## Write as an outup 
+```{r}
+covariate <- pca_scores %>% dplyr::select(PC1,PC2)
+covariate$null <- '1'
+covariate <- covariate[, c("null", "PC1", "PC2")]
+
+write.table(covariate, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/pca_covar.txt", sep="\t", row.names = F, quote = F)
+```
+
+
+
+
+
+

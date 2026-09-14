@@ -1,0 +1,253 @@
+---
+title: "f1_expisit_model"
+format: html
+editor: visual
+autor: Elizaveta Grigoreva
+---
+
+How data looks like and what are we trying to model?##
+
+We are working with dataset of F1s natural accessions crossed to Col-0 ddm1 mutant (maternal haplotype in all crosses). After quantification by RSEM using Col0 as a reference genome, we have a matrix of transposable elements and genes either expressed, not present or silenced among all samples.
+
+Our experiment has been done in the way that every sequencing plate has been carrying controls on the Col0 haplotype: 1) maternal *ddm1* haplotype (Col0) where we expect activation of TEs, 2) maternal haplotype (Col0) WT ddm1, where we see almost no expression of TEs due to the natural silencing.
+
+In order to distinguish not present from silenced (or re-silenced) we can calculate number of TEs and/or genes in the following categories. For that, we always have a maternal *ddm1* haplotype (Col0) to compare to. In this haplotype all TEs should be expressed on the maximum level, because no re-silencing happens (no cross). As well as we have pure Col0 WT (active ddm1). Then we can categorize TEs based on the expression level:
+
+1.  Off in Col0 WT and off in Col0 *ddm1* (more likely dead TE)
+2.  Off in Col0 WT and on in Col0 *ddm1* (TE affected by ddm1 mutation)
+3.  On in Col0 WT and on in Col0 *ddm1* (epi-allele?)
+4.  On in Col0 WT and off in Col0 *ddm1* (wierd TEs probably representing a dosage effect)
+
+### How many TEs are expressed in *ddm1* control in comparison to WT (Col0 haplotype)?
+
+```{r}
+library(arrow)
+library(ggplot2)
+library(dplyr)
+# Counts anti-sense
+rsem_counts_sense <- read_csv_arrow(
+  "/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/sense_expr_te_genes_no_filter_reads_log2cpm_normalization.csv.gz",
+  col_names = TRUE
+)
+# Counts sense
+```
+
+```{r}
+library(data.table)
+# Get TEs detected in each control group
+setDT(rsem_counts_sense)
+# Get only controls 
+controls <- rsem_counts_sense[genotype %in% c("ddm1_ct", "ct_col")]
+```
+
+```{r}
+# Categorize per TE per sample (not averaged)
+controls[, feature_type := fifelse(grepl("TE", id), "TE", "gene")]
+te_controls <- controls[feature_type == "gene"]
+
+# Define on/off per TE per sample
+te_per_sample <- te_controls[, .(id, sample_id, genotype, plate, log2cpm, replicate,Sequencing_date, Set)]
+te_per_sample[, is_on := log2cpm >= 1]
+
+# Find plates that have both genotypes
+valid_plates <- te_per_sample[, .(has_both = all(c("ct_col", "ddm1_ct") %in% genotype)), by = plate][has_both == TRUE, plate]
+# Filter
+te_per_sample <- te_per_sample[plate %in% valid_plates]
+
+```
+
+We see that TEs are highly 0 inflated. Let's caclculate attribution for each of the categories
+
+```{r}
+# Assign TE status 
+te_status <- te_per_sample[, .(
+  on_in_ct_col  = all(is_on[genotype == "ct_col"]),
+  on_in_ddm1_ct = all(is_on[genotype == "ddm1_ct"])
+), by = .(id, plate)]
+
+# Categorize per TE per plate
+te_status[, category := fcase(
+  on_in_ct_col == FALSE & on_in_ddm1_ct == FALSE, "off_wt/off_ddm1",
+  on_in_ct_col == FALSE & on_in_ddm1_ct == TRUE,  "off_wt/on_ddm1",
+  on_in_ct_col == TRUE  & on_in_ddm1_ct == TRUE,  "on_wt/on_ddm1",
+  on_in_ct_col == TRUE  & on_in_ddm1_ct == FALSE, "on_wt/off_ddm1"
+)]
+
+# Counts per category per plate
+te_status[, .N, by = .(plate, category)][order(plate, category)]
+# Calculate for every plate and visualie
+cat_counts <- te_status[, .N, by = .(plate, category)][order(plate, category)]
+# Make a plot 
+cat_counts %>% filter(category!="off_wt/off_ddm1") %>% ggplot(aes(x = N, y = factor(plate), fill = category)) +
+  geom_col(position = "stack") +
+  #geom_text(aes(label = N), position = position_stack(vjust = 0.5), size = 2) +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 12)) +
+  labs(title = "TE categories per plate (Col0 haplotype)",
+       x = "Number of TEs", y = "Plate", fill = "")
+```
+
+What is the expression distribution in these categories (except of off/off?)
+
+```{r}
+te_per_sample_cat <- merge(te_per_sample, te_status[, .(id, plate, category)], by = c("id", "plate"))
+
+te_per_sample_cat %>% 
+  #filter(genotype=="ddm1_ct") %>% 
+  ggplot(aes(x = log2cpm, fill = genotype)) +
+  geom_histogram(bins = 50, alpha = 0.7, position = "identity") +
+  facet_wrap(~category, scales = "free") +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "bottom") +
+  labs(title = "gene expression distribution,on >=1 count",
+       x = "log2CPM", y = "Count", fill = "")
+
+```
+
+Next question we wanna answer is how consistent this response in each of the categories? How many replicates among plates share the same TEs with the same effect?
+
+```{r}
+colors <-c("#A64D79","#452829","#408A71","#1D546D")
+library(UpSetR)
+
+# For each TE, which plates have it as "ddm1-responsive"?
+te_responsive <- te_status[category == "off_wt/on_ddm1"]
+upset_mat <- dcast(te_responsive, id ~ paste0("", plate), 
+                   value.var = "category", fun.aggregate = length)
+upset_df <- as.data.frame(upset_mat)
+rownames(upset_df) <- upset_df$id
+upset_df$id <- NULL
+
+upset(upset_df, 
+      sets = colnames(upset_df),
+      order.by = "freq",
+      nintersects = 10,
+      main.bar.color = "#408A71",
+      text.scale = 1.3,
+      mainbar.y.label = "Number of shared genes",
+      sets.x.label = "genes per plate")
+```
+
+Take TEs which are off in wt and on in ddm1 and check heatmap on the whole dataset
+
+```{r}
+tes_of_interest <- te_status[category == "off_wt/on_ddm1",]
+
+rsem_counts_sense_filtered <- rsem_counts_sense[id %in% tes_of_interest$id,]
+
+## genes/TEs present in all plates
+n_plates <- length(unique(te_responsive$plate))
+consistent_tes <- rownames(upset_df)[rowSums(upset_df) == n_plates]
+consistent_tes
+
+```
+
+Enrichment of the genes of interest
+
+```{r}
+
+```
+
+Model of overall expression.
+
+Test importance of the genotype
+
+```{r}
+# Select ddm1 because other values are close to 0 in control crosses 
+rsem_counts_sense_filtered_ddm1 <- rsem_counts_sense_filtered[rsem_counts_sense_filtered$genotype=="ddm1",]
+
+library(lmerTest)
+
+mbase <- lmer(
+  log2cpm ~ (1 | accession) + (1 | plate),
+  data = rsem_counts_sense_filtered_ddm1 # gausian model because values are already log2 
+)
+
+summary(mbase)
+
+vc <- as.data.frame(VarCorr(mbase))
+vc$proportion <- vc$vcov / sum(vc$vcov)
+
+ggplot(vc, aes(x = grp, y = proportion, fill = grp)) +
+  geom_col() +
+  geom_text(aes(label = round(proportion, 4)), vjust = -0.5) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Variance explained by random effects",
+       x = "", y = "Proportion of variance", fill = "")
+```
+
+Test importance of the individual TE
+
+```{r}
+mbase <- lmer(
+  log2cpm ~ (1 | accession) + (1 | plate) +(1|id),
+  data = rsem_counts_sense_filtered_ddm1 # gausian model because values are already log2 transformed 
+)
+
+summary(mbase)
+
+vc <- as.data.frame(VarCorr(mbase))
+vc$proportion <- vc$vcov / sum(vc$vcov)
+
+ggplot(vc, aes(x = grp, y = proportion, fill = grp)) +
+  geom_col() +
+  geom_text(aes(label = round(proportion, 4)), vjust = -0.5) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Variance explained by random effects",
+       x = "", y = "Proportion of variance", fill = "")
+```
+
+Test importance of the TE family
+
+```{r}
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+```
+
+```{r}
+# Join with TE annotation
+te_annotation_with_superfamily <- left_join(rsem_counts_sense_filtered_ddm1, te_annotation, by = c("id" = "Transposon_Name"))
+
+mbase <- lmer(
+  log2cpm ~ (1 | accession) + (1 | plate) +(1|id)+(1|Transposon_Family),
+  data = te_annotation_with_superfamily # gausian model because values are already log2 transformed 
+)
+
+summary(mbase)
+
+vc <- as.data.frame(VarCorr(mbase))
+vc$proportion <- vc$vcov / sum(vc$vcov)
+
+ggplot(vc, aes(x = grp, y = proportion, fill = grp)) +
+  geom_col() +
+  geom_text(aes(label = round(proportion, 4)), vjust = -0.5) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Variance explained by random effects",
+       x = "", y = "Proportion of variance", fill = "")
+```
+
+Test importance of the TE Superfamily
+
+```{r}
+# Join with TE annotation
+te_annotation_with_superfamily <- left_join(rsem_counts_sense_filtered_ddm1, te_annotation, by = c("id" = "Transposon_Name"))
+
+mbase <- lmer(
+  log2cpm ~ (1 | accession) + (1 | plate) +(1|id)+(1|Transposon_Family) + (1|Transposon_Super_Family),
+  data = te_annotation_with_superfamily # gausian model because values are already log2 transformed 
+)
+
+summary(mbase)
+
+vc <- as.data.frame(VarCorr(mbase))
+vc$proportion <- vc$vcov / sum(vc$vcov)
+
+ggplot(vc, aes(x = grp, y = proportion, fill = grp)) +
+  geom_col() +
+  geom_text(aes(label = round(proportion, 4)), vjust = -0.5) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Variance explained by random effects",
+       x = "", y = "Proportion of variance", fill = "")
+```
+
+Test importance of the methylation status in Col0

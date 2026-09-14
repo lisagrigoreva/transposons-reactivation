@@ -1,0 +1,76 @@
+---
+title: "000_checking_3primeend_bias"
+output: html_document
+date: "2026-08-31"
+---
+
+```{r setup, include=FALSE}
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+## Check the 3' end bias 
+```{r}
+library(jsonlite)
+library(ggplot2)
+# Read file 
+file <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/mapping_bias/294478_S165.genes_TES_matrix.gz"
+
+upstream <- 500
+bin_size <- 10
+
+mat <- read.table(gzfile(file), skip = 1, sep = "\t")
+mean_signal <- colMeans(mat[, -(1:6)], na.rm = TRUE)
+
+profile <- data.frame(
+    position = (seq_along(mean_signal) - 1) * bin_size - upstream,
+    signal = mean_signal
+)
+
+ggplot(profile, aes(x = position, y = signal)) +
+    geom_line(linewidth = 1) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "3' bias around TES (genes)", x = "Distance from TES (bp)", y = "Mean CPM signal") +
+    theme_minimal()
+```
+## Plot along all samples
+```{r}
+indir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/004_alignment/all_plates_96w/mapping_bias"
+all_files <- list.files(indir, pattern = "\\.te_TES_matrix\\.gz$", full.names = TRUE)
+
+files <- sample(all_files, 100)
+
+upstream <- 500
+bin_size <- 10
+
+get_profile <- function(file) {
+    mat <- read.table(gzfile(file), skip = 1, sep = "\t")
+    mean_signal <- colMeans(mat[, -(1:6)], na.rm = TRUE)
+    data.frame(
+        sample = sub("\\.genes_TES_matrix\\.gz$", "", basename(file)),
+        position = (seq_along(mean_signal) - 1) * bin_size - upstream,
+        signal = mean_signal
+    )
+}
+
+all_profiles <- do.call(rbind, lapply(files, get_profile))
+
+# Average signal across samples, per position
+avg_profile <- aggregate(signal ~ position, data = all_profiles, FUN = mean)
+
+ggplot(avg_profile, aes(x = position, y = signal)) +
+    geom_line(linewidth = 1, color = "darkred") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "3' bias around TES (average of 100 samples)", x = "Distance from TES (bp)", y = "Mean CPM signal") +
+    theme_minimal()
+```
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,199 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-03-04"
+---
+
+# Log2 data 
+```{r}
+library(data.table)
+library(qqman)
+all_res <-fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_family_average/log2/with_K/combined_all_res.txt")
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+# Fisher's combined p-value per SNP
+all_res_filtered <-all_res[!is.na(p_wald) & -log10(p_wald) > 2,]
+
+res_wo_atcopia <- all_res[!grepl("ATCOPIA", all_res$study), ]
+#CMT2 targeted TEs
+#cmt2_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv",header=T)
+#cmt2_tes2 <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_2_vs_Col_0_up_TEs_VST.tsv",header=T)
+#cmt2_tes$Geneid <- gsub("_AS", "", cmt2_tes$Geneid)
+#cmt2_tes2$Geneid <- gsub("_AS", "", cmt2_tes2$Geneid)
+#cmt2_tes3 <- rbind(cmt2_tes,cmt2_tes2)
+#cmt2_tes<-cmt2_tes3
+#all_res_cmt2 <- all_res[all_res$study %in% cmt2_tes$Geneid, ]
+
+# Fisher combine 
+
+fisher_combined <- res_wo_atcopia[, .(
+  n_studies   = .N,
+  fisher_stat = -2 * sum(log(p_wald)),
+  mean_beta   = mean(beta),
+  mean_af     = mean(af)
+), by = .(rs, chr, ps)]
+
+fisher_combined[, p_fisher := pchisq(fisher_stat, df = 2 * n_studies, lower.tail = FALSE)]
+
+# Plot
+par(mar = c(5, 5, 4, 2))
+
+snp_table <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", sep=";", header=T)
+
+# Get SNPs to highlight
+snps_to_highlight <- NULL
+if (!is.null(snp_table)) {
+  hits <- do.call(rbind, lapply(1:nrow(snp_table), function(i) {
+    fisher_combined[fisher_combined$chr == as.integer(snp_table$chr[i]) &
+                    fisher_combined$ps > snp_table$start[i] &
+                    fisher_combined$ps < snp_table$end[i], ]
+  }))
+  snps_to_highlight <- hits$rs
+}
+
+
+# QQ plot
+par(mar = c(5, 5, 2, 2))
+
+# Manhattan plot
+par(mar = c(5, 5, 4, 2))
+manhattan(fisher_combined,
+          chr = "chr", bp = "ps", snp = "rs", p = "p_fisher",
+          col = c("#1A1A1A", "#838B8B"),
+          genomewideline = FALSE, suggestiveline = FALSE,
+          highlight = snps_to_highlight,
+          ylim = c(0, 80),
+          cex.axis = 1, cex.lab = 1,
+          xlab = "Chromosome",
+          ylab = expression(-log[10](P)))
+  
+```
+## Make a plottly plot 
+```{r}
+make_manhattan <- function(input, threshold = 2, title = "Manhattan Plot", 
+                           output_file = "manhattan.html", gene_coords = NULL){
+  
+  if(is.character(input) && file.exists(input)){
+    cat("Reading file...\n")
+    gwas_data <- read.delim(input, sep = "\t")
+  } else {
+    gwas_data <- input
+  }
+  n_snps <- nrow(gwas_data)
+  bonferroni <- -log10(0.05 / n_snps)
+  gwas_filtered <- gwas_data[-log10(gwas_data$p_wald) > threshold, ]
+  if(!is.null(gene_coords)){
+    cat("Annotating genes...\n")
+    gwas_dt2 <- as.data.table(gwas_filtered)
+    gene_dt2 <- as.data.table(gene_coords)
+    # Join SNPs to genes using exact gene boundaries. Show ID only if the gene falls into 
+    annotated <- gene_dt2[gwas_dt2, 
+                          .(chr = i.chr, ps = i.ps, p_wald = i.p_wald, 
+                            af = i.af, tair_id = V10),
+                          on = .(V1 = chr, V4 <= ps, V5 >= ps),
+                          mult = "first"]
+    annotated[is.na(tair_id), tair_id := "."]
+    gwas_filtered <- as.data.frame(annotated)
+  }
+  mh <- manhattanly(
+    gwas_filtered,
+    chr = "chr",
+    bp = "ps",
+    p = "p_wald",
+    snp = "ps",
+    annotation1 = "af",
+    annotation2 = if(!is.null(gene_coords)) "tair_id" else NULL,
+    suggestiveline = FALSE,
+    genomewideline = bonferroni,# Bonferroni line
+    title = title
+    )
+  htmlwidgets::saveWidget(mh, file = output_file)
+  cat(paste("\nSaved to", output_file))
+  mh <- mh %>% plotly::layout(yaxis = list(range = c(2, 100)))
+  return(mh)
+}
+
+
+fisher_combined[, p_wald := p_fisher]
+fisher_combined[, af := mean_af]
+
+make_manhattan(fisher_combined, threshold = 2, title = "average_ddm1_zscale_maf005_with_k_families", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_family_average/log2/with_K/average_ddm1_zscale_maf005_with_k_families.html", gene_coords = genes_and_tes)
+```
+
+
+```{r}
+library(dplyr)
+te_annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
+plot_data <- left_join(all_res_filtered, te_annotation, by=c("study"="Transposon_Name"))
+```
+
+```{r}
+library(dplyr)
+gene_annotation <- read.table("/groups/nordborg/projects/genome_organization/manuscript/01_data/tair10/TAIR10_GFF3_genes.gff") %>% filter(V3=="gene" |V3=="transposable_element_gene"  )
+gene_annotation$gene_id <- gsub(";.*", "",gene_annotation$V9)
+gene_annotation$gene_id <- gsub("ID=", "", gene_annotation$gene_id)
+gene_annotation <- gene_annotation %>% dplyr::select(V1,V3,V4,V5,gene_id)
+plot_data <- left_join(all_res, gene_annotation, by=c("study"="gene_id"))
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+
+plot_sub <- plot_data[p_wald < 0.001]
+
+ggplot(plot_sub, aes(x = ps_cum, y = te_pos_cum, color = -log10(p_wald))) +
+  geom_point(size = 1, shape = 15, stroke = 0) +
+ scale_color_gradientn(
+  name = "-log10(p)",
+  colours = c("grey90", "blue", "red", "yellow"),
+  values = scales::rescale(c(2, 5, 7, 10)),
+  limits = c(2, 10),
+  oob = scales::squish
+) +
+  geom_vline(xintercept = chr_breaks$start, color = "grey70", linetype = "dotted", linewidth = 0.3) +
+  geom_hline(yintercept = chr_breaks$start, color = "grey70", linetype = "dotted", linewidth = 0.3) +
+  labs(x = "SNP genomic position", y = "Gene position") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank()) +
+  coord_equal()+ylim(0, max(plot_data$te_pos_cum))
+
+```
+
+
+
+```{r}
+
+# TEs with most significant associations
+# Find TEs with most associations (horizontal lines)
+top_tes <- plot_data %>% 
+  count(study, TE_num, sort = TRUE) %>% 
+  head(20)
+
+ggplot(plot_data,
+       aes(x = ps_cum/1e6, y = TE_num, color = -log10(p_wald))) +
+  geom_point(alpha = 0.9, size = 0.8, shape = 16) +
+  scale_color_gradientn(
+    colours = c("#FAF8F1", "#C5CAE9", "#5C6BC0", "#2845D6", "#1A3263"),
+    values = scales::rescale(c(3, 5, 7, 9, 10)),
+    limits = c(3, 10), oob = scales::squish,
+    name = expression(-log[10](p))) +
+  scale_x_continuous(breaks = chr_axis$center/1e6,
+                     labels = chr_axis$chr) +
+  scale_y_continuous(
+    breaks = top_tes$TE_num,       # only label top TEs
+    labels = top_tes$study,
+    expand = c(0, 0.5)) +
+  labs(x = "Chromosome", y = "Transposon position") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 4),  # show TE names
+        axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+```
+
+
+
+
+

@@ -1,0 +1,56 @@
+---
+title: "gwas_strategies_description"
+format: docx
+editor: visual
+---
+
+## GWAS F1 *ddm1* 1001 Kannomes 
+
+### Part 1. Data filtering 
+
+We start with the table of ... plants (link to the table)
+
+The first thing we check if there are any miscrossed accessions. For that we run ibdpaint and checked them visually (folder on github) as well as compared results with probabilistic pipeline.
+
+```         
+```
+
+Next, we removed individuals mislabeled by constructing PCA on the ddm1 VS Col0
+
+### Part 2. GWAs attempts 
+
+#### 2.1. Differentially expressed TEs matrix as an input; only ddm1 (control columbia VS ddm1 selfed)
+
+We obtain differentially expressed TEs using DeSeq2
+
+#### 2.1.2 BLUPs gwas in ddm1 (log 2 transformed data)
+
+#### 2.1.3 BLUPs gwas in ddm1 (z-score transformed data)
+
+#### 2.1.3 BLUPs gwas per family (log 2 transformed data)
+
+#### 2.1.3 BLUPs gwas per family (z-score transformed data)
+
+#### 2.1.3 BLUPs gwas per family (BoxCox transformed)
+
+#### 2.1.4 BLUPs gwas per Superfamily  (log 2 transformed data)
+
+#### 2.1.4 BLUPs gwas per Superfamily  (z-score transformed data)
+
+#### 2.1.5 BLUPs on individual TEs (log2 transformed data)
+
+#### 2.1.4 BLUPs gwas per Superfamily  (z-score transformed data)
+
+#### 2.1.4 Cluster-based solution (on expression)
+
+#### 2.1.4 CMT2-targeted TEs among de TEs 
+
+#### 2.1.4 RdDM-targeted TEs set among de TEs
+
+#### 2.1.4 Allele specific expressed TEs 
+
+#### 2.1.4  TEs which changing methylation
+
+#### 2.2. Differentially expressed TEs matrix as an input; only ddm1 (each accession F1 ddm1 VS F1 Col)
+
+#### 2.3. Explicit model (Tom's suggestions)

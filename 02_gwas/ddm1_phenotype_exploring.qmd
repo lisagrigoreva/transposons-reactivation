@@ -1,0 +1,272 @@
+---
+title: "ddm1_expression_phenotype_exploring"
+format: html
+editor: visual
+autor: Lisa Grigoreva
+---
+
+# How data is distributed?
+
+We are looking at expression of TEs in a panel of F1s from natural accessions crossed to (1) *ddm1* mutants (2) Col0 control. At a basic level we might characterise expression as "on" or "off" depending on whether detectable expression is zero or greater than zero. A single TE may be:
+
+1\. **Off** in controls and **off** in *ddm1* (probably dead TEs)
+
+2\. **Off** in controls and **on** in *ddm1* (reactivated TEs, probably common)
+
+3\. **On** in controls and **on** in *ddm1* (globally expressed for real or artifactual reasons)
+
+4\. **On** in controls and **off** in *ddm1* (abandon hope all ye who enter)
+
+First, we are trying to answer the question of how many non dead TEs we have in the dataset.
+
+For that, we use RSEM probabilistically assigned reads from STAR alignment (allowing up to 10 locations for multi-mapping).
+
+We start with the raw counts not normalized to the library size (number of reads/depth of the sequencing).
+
+## Import counts
+
+```{r}
+library(tximport)
+library(data.table)
+# Read sampledata
+sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_phenotype_preprocessed_based_on_pca_with_selfers_v2.csv",header=T)
+# Read txitogene object 
+tx2gene <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/tx2gene.txt",header=F)
+## Import rsem counts 
+# Base directory for RSEM outputs
+rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/005_quant/rsem"
+# Dynamically construct paths for each sample
+sample_paths <- file.path(rsem_base_dir)
+# List all .isoforms.results files
+files <- file.path(sample_paths, paste0(sampledata$Sample_id, ".genes.results"))
+# Check which files exist
+existing_files <- files[file.exists(files)]
+# Extract sample IDs - THIS IS THE FIX
+# Get the sample IDs from sampledata_version3 that correspond to existing files
+file_indices <- which(file.exists(files))
+fileSampleIDs <- sampledata$Sample_id[file_indices]
+# Create a named vector for tximport with proper sample IDs
+names(existing_files) <- fileSampleIDs
+# Verify the names are correct
+head(names(existing_files))
+# Perform tximport for RSEM quantification
+txi.rsem <- tximport(existing_files, type = "rsem")
+# Check column names now
+head(colnames(txi.rsem$counts))
+dim(txi.rsem$counts)
+
+# Filter sampledata 
+filteredSampleData <- sampledata[sampledata$Sample_id %in% fileSampleIDs, ]
+rownames(filteredSampleData) <- filteredSampleData$Sample_id
+
+# Subset txi.rsem
+sampleNames <- rownames(filteredSampleData)
+
+# Subset the txi.rsem object
+txi.rsem$counts <- txi.rsem$counts[, sampleNames, drop = FALSE]
+txi.rsem$abundance <- txi.rsem$abundance[, sampleNames, drop = FALSE]
+txi.rsem$length <- txi.rsem$length[, sampleNames, drop = FALSE]
+
+# Now extract counts
+counts <- txi.rsem$counts
+rownames(counts) <-rownames(txi.rsem$counts)
+dim(counts)
+```
+
+```{r}
+## Assign colnames 
+colnames(counts) <- (paste(filteredSampleData$Genotype, 
+                                     filteredSampleData$Accession, 
+                                     filteredSampleData$Replicate,
+                                     filteredSampleData$Request_id,filteredSampleData$Sample_id,filteredSampleData$Sequencing_date, filteredSampleData$Number_of_reads,sep="_"))
+## Write output table 
+write.table(counts, "/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_rsem_col0_based_all_data.csv", quote = F, row.names = T)
+```
+
+Distrubution of the reads:
+
+```{r}
+library(data.table)
+counts <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_rsem_col0_based_all_data.csv")
+```
+
+```{r}
+library(tidyverse)
+# Reframe to the long format 
+sample_metadata <- data.frame(
+  sample_name = colnames(counts)
+) %>%
+  separate(sample_name, 
+           into = c("F1","Cross", "Accession", "Replicate", "Plate", 
+                   "Sample_id", "Seq_date", "Number_of_reads"),
+           sep = "_", 
+           remove = FALSE) %>%
+  mutate(
+    Cross_full = paste(F1, Cross, sep = "_")  # F1_ddm1 or F1_Col
+  )
+
+counts_long <- counts %>%
+  rownames_to_column("gene_id") %>%
+  pivot_longer(cols = -gene_id, 
+               names_to = "sample_name", 
+               values_to = "expression") %>%
+  left_join(sample_metadata, by = "sample_name")
+
+# Organize by cross type
+counts_by_cross <- counts_long %>%
+  mutate(
+    Cross_type = Cross,  # "ddm1" or "Col"
+    Plate_group = Plate  
+  )
+
+```
+
+If we do distribution of the raw reads they will be shifted towards the col0 Log2 expression by cross type. We see that for majority of the genes we have 0 expression
+
+```{r}
+#| echo: false
+# Identify TEs and genes
+counts_by_cross_tes <- counts_by_cross %>% 
+  filter(grepl("^AT[1-9]TE", gene_id))
+
+counts_by_cross_genes <- counts_by_cross %>% 
+  filter(!grepl("^AT[1-9]TE", gene_id))
+
+# Plot for TEs
+ggplot(counts_by_cross_tes, aes(x = log2(expression+1))) + 
+  geom_histogram() + 
+  facet_wrap(~Cross_full) +
+  labs(title = "TEs")
+
+# Plot for genes
+ggplot(counts_by_cross_genes, aes(x = log2(expression+1))) + 
+  geom_histogram() + 
+  facet_wrap(~Cross_full) +
+  labs(title = "Genes")
+```
+
+We first trying to apply the model to estimate the proportion of TEs which can be reactivated by the action of ddm1 mutation For that we create the overall expression model which answers us questions - What is the proportion explained by the confounding components (plate, sequencing date) - Which TEs are expressed in the ddm1? - Which TEs remain silenced in ddm1? - Is accession used in the cross affects TE re-silencing?
+
+```{r}
+library(lme4)
+library(dplyr)
+# control col0 in fact just F1 Col (Col0 WT crossed to Col0 WT)
+counts_by_cross_tes$Cross_full <- ifelse(counts_by_cross_tes$Cross_full == "ct_col", 
+                                          "F1_Col", 
+                                          counts_by_cross_tes$Cross_full)
+# Convert number of reads to numeric
+counts_by_cross_tes$Number_of_reads <- as.numeric(counts_by_cross_tes$Number_of_reads)
+# Subset only ddm1 crosses 
+counts_by_cross_tes_ddm1 <- counts_by_cross_tes[counts_by_cross_tes$Cross_full=="F1_ddm1",]
+## We remove TEs which have 0 expression in all samples, because otherwise model doesn't work 
+# Remove TEs that are all zeros
+counts_by_cross_tes_ddm1_filtered <- counts_by_cross_tes_ddm1 %>%
+  group_by(gene_id) %>%
+  filter(sum(expression) > 10) %>%  # Keep TEs with at least some expression
+  ungroup()
+
+# Check how many TEs removed
+cat("Original TEs:", n_distinct(counts_by_cross_tes_ddm1$gene_id), "\n")
+cat("Filtered TEs:", n_distinct(counts_by_cross_tes_ddm1_filtered$gene_id), "\n")
+cat("Removed:", n_distinct(counts_by_cross_tes_ddm1$gene_id) - 
+    n_distinct(counts_by_cross_tes_ddm1_filtered$gene_id), "TEs\n")
+```
+
+Apply a simple model which does not take into account 0 inflation (doesn't work. numerical overflow)
+
+```{r}
+# Apply simple model which does not take into account 0 inflation
+library(lme4)
+
+# Fit the simple model 
+alive_te_model_no_0_inflation <- glmer(
+  expression ~ (1|gene_id) + (1|Accession) + (1|Plate/Seq_date) + offset(log(Number_of_reads)),
+data = counts_by_cross_tes_ddm1_filtered,
+family='poisson'
+)
+# Summarise the model
+summary(alive_te_model_no_0_inflation)
+# Overdispersion check (ratio should be 1 - indicates a good fit )
+rdf <- nrow(alive_te_model@frame) - length(fixef(alive_te_model))
+# Calculate overdispersion ratio
+overdispersion_ratio <- sum(residuals(alive_te_model, type = "pearson")^2) / rdf
+cat("Overdispersion ratio:", overdispersion_ratio, "\n")
+```
+
+In Poisson distribution mean=variance. We try to fit negative binomial to hangle it correctly
+
+```{r}
+library(glmmTMB)
+# Negative binomial model 
+alive_te_model_no_0_inflation <- glmer.nb(
+  expression ~ (1|gene_id) + (1|Accession) + (1|Plate/Seq_date) + 
+    offset(log(Number_of_reads)),
+  data = counts_by_cross_tes_ddm1_filtered,
+  control = glmerControl(optimizer = "bobyqa")
+)
+
+# View summary
+summary(alive_te_model_no_0_inflation)
+```
+
+But we see that there is a zero inflation in the model. Even with the filtered set of TEs even in ddm1 after filtration
+
+```{r}
+ggplot(counts_by_cross_tes_ddm1_filtered, aes(x = log2(expression+1))) + 
+  geom_histogram() + 
+  facet_wrap(~Cross_full) +
+  labs(title = "TEs")
+```
+
+We try to model it using zero inflation
+
+```{r}
+library(brms)
+library(brms)
+
+library(brms)
+library(dplyr)
+
+# Convert expression to integer
+counts_by_cross_tes_ddm1_filtered <- counts_by_cross_tes_ddm1_filtered %>%
+  mutate(expression = as.integer(expression))
+
+# Now fit the model
+alive_te_model_zero_infl <- brm(
+  bf(expression ~ 1 + (1|gene_id) + (1|Accession) + (1|Plate/Seq_date) + 
+       offset(log(Number_of_reads)),           
+     zi ~ 1 + (1|gene_id)), # With intercept                     
+  data = counts_by_cross_tes_ddm1_filtered,
+  family = zero_inflated_negbinomial(),        
+  cores = 4)
+
+```
+
+As Tom pointed out: \## At what level does resilencing happen? Knocking out *ddm1* is like taking a sledgehammer to your heterochromatin. It is not clear how the cell what try to rebuild it, but we can imagine this could be at several levels. Here is a list of non-mutually exclusive hypotheses from least to most organised: 1. There is no resilencing in the F1s at all. All we measure is noise. 2. Every plant resilences TEs in a unique way. 3. There is variation between TEs across genotypes for resilencing 4. There is variation between TE families for resilencing. 5. There is variation between TE superfamilies for resilencing. 6. There is genetic variation for overall resilencing ability; some accessions re-establish silencing across the whole genome better than others. We can compare these hypotheses by jointly estimated the variance in TE-level exression explained by differences at each level. We modify the previous model to add terms for the superfamily, family, and TE
+
+Now we are interested to add more components to the 0 inflated model (Superfamily and family) and see how well it explains data
+
+```{r}
+## gene ID is TE
+alive_te_model_superfamily <- glmer(
+  log2(expression+1) ~ Cross_full + (1|gene_id) + (1|Accession) + (1|Plate/Seq_date) + (1|superfamily)
+    offset(log(Number_of_reads + 1)),
+  data = counts_by_cross_tes, 
+  family = poisson
+)
+
+alive_te_model_superfamily <- glmer(
+  (expression) ~ Cross_full + (1|gene_id) + (1|Accession) + (1|Plate/Seq_date) + (1|family)
+    offset((Number_of_reads),
+  data = counts_by_cross_tes, 
+  family = poisson
+)
+# Get variance components 
+```
+
+We want to estimate variance explained by each component on the data scale
+
+```{r}
+vc$pve_data_scale <- NA
+for (i in 1:nrow(vc))
+```

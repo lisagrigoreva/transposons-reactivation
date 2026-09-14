@@ -1,0 +1,317 @@
+---
+title: "001_get_misclustered_samples"
+output: html_document
+date: "2025-03-27"
+---
+# Load libraries 
+```{r setup, include=FALSE}
+library(tximport) 
+library(BiocParallel)
+library(DESeq2)
+library(dplyr)
+library(tidyverse)
+library(reshape2) 
+```
+#DeSeq2 
+## Upload sampledata and order it 
+```{r setup{}
+# Read data with filtered number of reads, at least 2 replicates and no misclustered samples
+sampleData <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/filtered_data_wo_misclustered_wo_traps_2_repl_with_ds_controls.txt", header=T)
+# Join sample data with filtered data
+#Reorder in alphabetic order
+sampleData<- sampleData[order(sampleData$Sample_id),] 
+#Make rownames acession names
+rownames(sampleData) <- sampleData$Sample_id
+sampleData <- as.data.frame(sampleData)
+#sampleData <- na.omit(sampleData)
+```
+##Create tx2gene object 
+```{r}
+tx2gene <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/txi2gene.txt",header=F)
+```
+## Upload TE annotation 
+```{r}
+#Annotation of selected TEs  
+annotation_tair10_families <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/tes_annotation_with_superfamily.csv", sep=",", header=T)
+```
+## Import salmon data 
+```{r}
+library(tximport)
+
+# Base directory for Salmon outputs
+salmon_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/005_quant/all_plates_96w_salmon_tair10/"
+
+# Dynamically construct paths for each sample in sampleData$Sample
+sample_paths <- file.path(salmon_base_dir, sampleData$Sample_id)
+
+# List all quant.sf files within these sample paths
+files <- file.path(sample_paths, "quant.sf")
+
+# Check which files exist
+existing_files <- files[file.exists(files)]
+
+# Extract sample IDs for the existing files
+fileSampleIDs <- basename(dirname(existing_files))
+
+# Create a named vector for tximport: names are sample IDs
+names(existing_files) <- fileSampleIDs
+
+# Perform tximport for Salmon quantification
+txi.salmon <- tximport(existing_files, type = "salmon", tx2gene = tx2gene)
+
+# View a summary of the imported data
+summary(txi.salmon)
+# Filter sampledata 
+filteredSampleData <- sampleData[sampleData$Sample_id %in% fileSampleIDs, ]
+rownames(filteredSampleData) <- filteredSampleData$Sample_id
+
+
+##Subset txi salmon
+sampleNames <- rownames(filteredSampleData)
+
+# Subset the txi.salmon object based on the sample names
+txi.salmon$counts <- txi.salmon$counts[, sampleNames, drop = FALSE]
+txi.salmon$abundance <- txi.salmon$abundance[, sampleNames, drop = FALSE]
+txi.salmon$length <- txi.salmon$length[, sampleNames, drop = FALSE]
+```
+### LIMMA+VOOM QUANTIFICATION ###
+## Filtering based on number of reads 
+```{r}
+library(edgeR)
+library(limma)
+## Remove genes with 0 counts
+# Import counts and set column names
+counts <- txi.salmon$counts
+colnames(counts) <- make.unique(paste(filteredSampleData$Genotype, 
+                                     filteredSampleData$Accession, 
+                                     filteredSampleData$Replicate,
+                                     filteredSampleData$Request_id, sep="_"))
+
+# Remove all-zero genes
+nonzero <- counts[rowSums(counts) > 0, ]
+
+# Create DGEList object
+d0 <- DGEList(nonzero)
+
+# Create group indicators based on variant
+variant <- as.factor(filteredSampleData$Variant)
+group1 <- variant == "ddm1"  # ddm1 samples
+group2 <- variant == "Col"  # Col0 samples
+
+# Keep genes expressed in at least 20% of either group
+keep <- (rowSums(cpm(d0)[,group1] > 1) >= sum(group1)*0.1) | 
+        (rowSums(cpm(d0)[,group2] > 1) >= sum(group2)*0.1)
+
+# Filter the DGEList
+d0_filtered <- d0[keep,]
+
+# Calculate normalization factors
+d0_filtered <- calcNormFactors(d0_filtered)
+
+# Print summary
+cat("Total genes before filtering:", nrow(d0), "\n")
+cat("Genes retained after filtering:", nrow(d0_filtered), "\n")
+cat("Percentage retained:", round(nrow(d0_filtered)/nrow(d0)*100, 1), "%\n")
+
+# Before filtering
+log_cpm_before <- cpm(d0, log=TRUE)
+# After filtering
+log_cpm_after <- cpm(d0_filtered, log=TRUE, prior.count = 1)
+
+# Plot density distributions
+par(mfrow=c(1,2))
+plot(density(log_cpm_before), main="Before filtering", xlab="log2 CPM")
+plot(density((log_cpm_after)), main="After filtering", xlab="log2 CPM")
+```
+
+```{r}
+## Extract TEs
+tes <- grepl("AT[1-9]TE", rownames(log_cpm_after))
+##Extract all  TEs from data
+log_cpm_after_TEs_PCA <- log_cpm_after[tes,]
+
+all <-  prcomp(t(log_cpm_after_TEs_PCA))
+pca_data<- data.frame(all$x)
+
+# Create a data frame for plotting
+pca_plate_df <- data.frame(PC1 = pca_data$PC1, 
+                           PC2 = pca_data$PC2,Batch = filteredSampleData$Sequencing.date, 
+                           accession=filteredSampleData$Accession,
+                           variant=filteredSampleData$Variant,replicate=filteredSampleData$Replicate,plate=filteredSampleData$Request_id, Sample_id=filteredSampleData$Sample_id)
+
+
+explained_variance <- round(100 * all$sdev^2 / sum(all$sdev^2), 2) 
+
+pca_plate_df$replicate <- round(pca_plate_df$replicate)
+pca_plate_df$replicate <- as.factor(pca_plate_df$replicate)
+
+
+ggplot(pca_plate_df, aes(x = PC1, y = PC2, color = variant)) +
+  geom_point(size = 2, alpha = 0.4) +
+  geom_text_repel(aes(label = accession), size = 3, color = "black") +  
+  theme_minimal(base_size = 14) +
+  labs(
+    x = paste0("PC1 (", explained_variance[1], "%)"),
+    y = paste0("PC2 (", explained_variance[2], "%)"))
+
+## Extract loadings 
+
+
+pca_plate_df <- as.data.frame(pca_plate_df)
+outliers_col0 <- pca_plate_df[pca_plate_df$PC1 <= -40 & pca_plate_df$variant=="Col",]
+outliers_ddm1 <- pca_plate_df[pca_plate_df$PC1 >= 0 & pca_plate_df$variant=="ddm1",]
+## Join outliers
+outlier_samples <- rbind(outliers_col0,outliers_ddm1)
+## Write a csv
+#write.csv2(outlier_samples,"/groups/nordborg/projects/ddm1_resilencing/10_metadata/ids_to_exclude_based_on_pca.txt")
+```
+
+```{r}
+## Extract TEs
+tes <- grepl("AT[1-9]TE", rownames(combat_corrected))
+##Extract all  TEs from data
+log_cpm_after_TEs_PCA <- combat_corrected[tes,]
+
+all <-  prcomp(t(log_cpm_after_TEs_PCA))
+pca_data<- data.frame(all$x)
+
+# Create a data frame for plotting
+pca_plate_df <- data.frame(PC1 = pca_data$PC1, 
+                           PC2 = pca_data$PC2,Batch = filteredSampleData$Sequencing.date, 
+                           accession=filteredSampleData$Accession,
+                           variant=filteredSampleData$Variant,replicate=filteredSampleData$Replicate,plate=filteredSampleData$Request_id, Sample_id=filteredSampleData$Sample_id)
+
+
+explained_variance <- round(100 * all$sdev^2 / sum(all$sdev^2), 2) 
+
+pca_plate_df$replicate <- round(pca_plate_df$replicate)
+pca_plate_df$replicate <- as.factor(pca_plate_df$replicate)
+
+
+ggplot(pca_plate_df, aes(x = PC1, y = PC2, color = Batch)) +
+  geom_point(size = 2, alpha = 0.4) +
+  geom_text_repel(aes(label = accession), size = 3, color = "black") +  
+  theme_minimal(base_size = 14) +
+  labs(
+    x = paste0("PC1 (", explained_variance[1], "%)"),
+    y = paste0("PC2 (", explained_variance[2], "%)")
+  )
+
+## Get misclustered samples based on the PCA
+```
+
+### ### ### ### ### ### ### ### #
+### Find misclustered samples ###
+### ### ### ### ### ### ### ### #
+```{r}
+normalized_counts_raw <- log_cpm_after_TEs_PCA
+colnames(normalized_counts_raw) <- paste(filteredSampleData$Plate, filteredSampleData$Accession, filteredSampleData$Variant, filteredSampleData$Sample_id, sep = "_")
+
+## Subset to TEs
+tes <- grepl("AT[1-9]TE", rownames(normalized_counts_raw))
+##Extract all  TEs from data
+normalized_counts_raw <- normalized_counts_raw[tes,]
+
+# Load required libraries
+library(pheatmap)
+library(ComplexHeatmap)
+library(circlize)
+
+# Assuming normalized_counts_raw is your CPM-normalized count matrix
+colnames(normalized_counts_raw) <- paste(filteredSampleData$Request_id, 
+                                         filteredSampleData$Accession, 
+                                         filteredSampleData$Variant, 
+                                         filteredSampleData$Sample_id, sep = "_")
+
+# Split samples by plate from filteredSampleData
+plates <- unique(filteredSampleData$Request_id)
+
+# Initialize list to store the tables for each plate
+clustering_tables <- list()
+heatmap_list <- list()
+filteredSampleData <- sampleData[sampleData$Sample_id %in% fileSampleIDs, ]
+rownames(filteredSampleData) <- filteredSampleData$Sample_id 
+
+
+# Loop through each plate
+for (plate in plates) {
+  
+  # Subset normalized counts by plate
+  plate_samples <- filteredSampleData$Request_id == plate
+  plate_counts <- normalized_counts_raw[, plate_samples]
+  
+  # Calculate correlation matrix for samples in this plate
+  correlation_matrix <- cor(plate_counts)
+  
+  # Perform hierarchical clustering on the correlation matrix
+  clustering <- hclust(as.dist(1 - correlation_matrix), method = "average")
+  
+  # Cut the tree to form two clusters
+  clusters <- cutree(clustering, k = 2)
+  
+  # Generate a clustering table for the current plate
+  clustering_table <- data.frame(Sample = names(clusters), Cluster = clusters)
+  clustering_tables[[paste("Plate", plate)]] <- clustering_table
+  
+  # Generate heatmap with ComplexHeatmap
+  heatmap <- Heatmap(correlation_matrix,
+                     name = "Correlation",
+                     row_dend_side = "left",
+                     column_dend_side = "top",
+                     clustering_distance_rows = "euclidean",
+                     clustering_distance_columns = "euclidean",
+                     clustering_method_rows = "average",
+                     clustering_method_columns = "average",
+                     show_row_names = TRUE,
+                     show_column_names = TRUE,
+                     row_split = clusters,  # Split rows based on clustering
+                     column_split = clusters,  # Split columns based on clustering
+                     top_annotation = HeatmapAnnotation(
+                       Genotype = filteredSampleData$Variant[plate_samples],
+                       col = list(Genotype = c("Col" = "#000B58", 
+                                                "ddm1" = "#FA812F"))
+                                              #"ct_col" = "lightblue",
+                                              #"ddm1_ct" = "darkred"))
+                     ),
+                     col = colorRamp2(c(-1, 0, 1), c("#133E87", "white", "#AF1740")),
+                     # Adjust row and column name text size
+                     row_names_gp = gpar(fontsize = 5),  # Adjust row names size (default: 10)
+                     column_names_gp = gpar(fontsize = 5), # Adjust column names size (default: 10)
+                     # Rotate column names if necessary
+                     column_names_rot = 45,  # Rotate column names by 45 degrees
+                     show_heatmap_legend = TRUE)
+  
+  # Store each heatmap object in the list with the plate name
+  heatmap_list[[paste("Plate", plate)]] <- heatmap
+}
+
+# Print the clustering tables
+clustering_tables
+
+# Draw a specific heatmap 
+draw(heatmap_list[["Plate 17224"]], annotation_legend_side = "bottom")
+
+```
+## Write misclustered samples
+```{r}
+# Combine the clustering results into one data frame
+clusters_samples <- as.data.frame(do.call(rbind, clustering_tables))
+names(clusters_samples) <- c("Sample", "Cluster")
+
+# Mutate the data frame to extract Plate, Accession, Variant, and ID from the Sample name
+clusters_samples <- clusters_samples %>%
+  mutate(
+    Plate = sapply(strsplit(Sample, "_"), `[`, 1),  # Extract the first part before the first '_'
+    Accession = sapply(strsplit(Sample, "_"), `[`, 2),  # Extract the second part
+    Variant = sapply(strsplit(Sample, "_"), `[`, 3),  # Extract the third part
+    ID = sapply(strsplit(Sample, "_"), `[`, 4)  # Extract the fourth part
+  )
+
+# Write the results to a CSV file
+write.csv2(clusters_samples, "/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/hclust_samples_assigned.csv", quote = F, row.names = F)
+```
+ 
+
+
+
+

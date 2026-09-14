@@ -1,0 +1,838 @@
+---
+title: "010_create_a_phenotype_individualte"
+output: html_document
+date: "2025-04-24"
+---
+
+## Load libraries
+```{r}
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(tibble)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+expression_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene.csv")
+
+expression_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sense_long_data.csv")
+sequencing_date <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/ddm1_crosses_metadata_2repl_filtered_num_reads_mapping_rate_filtered_outliers_by_pca.txt", header=T, sep=",") %>% select(Sample_id,Sequencing_date)
+```
+
+```{r}
+
+long_data_sense %>%filter(long_data_sense$genotype=="ddm1") %>%
+  ggplot(aes(x = log2(expression_value+1), fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "Log2 expression, sense, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+
+long_data_anti_sense %>%filter(long_data_anti_sense$genotype=="ddm1") %>%
+  ggplot(aes(x = log2(expression_value+1), fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "Log2 expression, anti-sense, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+```
+
+
+## Make a heatmap of the samples 
+```{r}
+library(ComplexHeatmap)
+Heatmap(
+      log2(expression_df+1),  # Changed from union_results to z_scaled_matrix
+      name = "log2(counts)",  # Removed plate variable
+      cluster_columns = TRUE,
+      cluster_rows = TRUE,
+      clustering_distance_columns = "euclidean",
+      show_column_names = FALSE,
+      show_row_names = FALSE,
+      show_heatmap_legend = TRUE,
+      row_km = 1,
+      row_km_repeats = 1000,
+      column_km_repeats = 1000,
+      column_km = 2,
+      #column_split = TRUE,
+      column_names_gp = gpar(fontsize = 5),
+      row_names_gp = gpar(fontsize = 5),
+      heatmap_legend_param = list(
+        title_gp = gpar(fontsize = 13),
+        labels_gp = gpar(fontsize = 13)))
+```
+
+## Prepare long format data with metadata
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tibble)
+expression_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene.csv")
+rownames(expression_sense) <- expression_sense$X
+expression_antisense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sene.csv")
+rownames(expression_antisense) <- expression_antisense$X
+```
+
+```{r}
+expression_sense$X<-NULL
+long_data_sense <- expression_sense %>%
+  rownames_to_column("TE") %>%
+  pivot_longer(
+    cols = -TE,
+    names_to = "sample_id",
+    values_to = "expression_value"
+  ) %>%
+  # Extract all metadata at once
+  mutate(
+    genotype = case_when(
+      grepl("F1_Col", sample_id) ~ "Col",
+      grepl("F1_ddm1", sample_id) ~ "ddm1",
+      grepl("ct_col", sample_id) ~ "ct_col",
+      grepl("ddm1_ct", sample_id) ~ "ddm1_ct",
+      TRUE ~ "other"
+    ),
+    accession = sub("^(?:[^_]+_){2}([^_]+).*", "\\1", sample_id),
+    plate = sub("^(?:[^_]*_){4}([^_]+).*", "\\1", sample_id),
+    replicate = sub("^(?:[^_]+_){3}([^_]+)_.*", "\\1", sample_id)
+  ) 
+  # Remove ddm1_ct
+  #filter(genotype != "ddm1_ct") %>%
+  # ct col controls are 6909 
+  #group_by(TE, accession, plate, replicate) %>%
+  #mutate(
+  #  expression_value = if_else(
+  #    genotype == "ct_col" & accession == "6909",
+  #    expression_value,
+  #    expression_value
+  #  )
+ # ) %>%
+  # Convert ct_col to Col for 6909
+  #mutate(genotype = if_else(genotype == "ct_col" & accession == "6909", "Col", genotype)) %>%
+  #filter(genotype %in% c("Col", "ddm1")) %>%
+  #ungroup() %>%
+  # Keep only paired measurements (both Col and ddm1 present)
+  #group_by(accession) %>%
+  #filter(n_distinct(genotype) == 2) %>%
+  #ungroup() %>%
+  # Keep only accessions with ≥2 replicates in BOTH genotypes
+  #group_by(accession, TE, genotype) %>%
+ # mutate(n_replicates = n_distinct(replicate)) %>%
+#  group_by(accession, TE) %>%
+ # filter(all(n_replicates >= 2)) %>%
+#  ungroup() %>%
+ # select(-n_replicates) %>%
+  # Create combined factor
+#  mutate(acc_var = paste(accession, genotype, sep = "_"))
+
+
+# Anti sense
+expression_antisense$X <- NULL
+long_data_anti_sense <- expression_antisense %>%
+  rownames_to_column("TE") %>%
+  pivot_longer(
+    cols = -TE,
+    names_to = "sample_id",
+    values_to = "expression_value"
+  ) %>%
+  # Extract all metadata at once
+  mutate(
+    genotype = case_when(
+      grepl("F1_Col", sample_id) ~ "Col",
+      grepl("F1_ddm1", sample_id) ~ "ddm1",
+      grepl("ct_col", sample_id) ~ "ct_col",
+      grepl("ddm1_ct", sample_id) ~ "ddm1_ct",
+      TRUE ~ "other"
+    ),
+    accession = sub("^(?:[^_]+_){2}([^_]+).*", "\\1", sample_id),
+    plate = sub("^(?:[^_]*_){4}([^_]+).*", "\\1", sample_id),
+    replicate = sub("^(?:[^_]+_){3}([^_]+)_.*", "\\1", sample_id)
+  )
+  # Remove ddm1_ct
+  #filter(genotype != "ddm1_ct") %>%
+  # ct col controls are 6909 
+ # group_by(TE, accession, plate, replicate) %>%
+ # mutate(
+#    expression_value = if_else(
+#      genotype == "ct_col" & accession == "6909",
+#      expression_value,
+#      expression_value
+#    )
+ # ) %>%
+  # Convert ct_col to Col for 6909
+  #mutate(genotype = if_else(genotype == "ct_col" & accession == "6909", "Col", genotype)) %>%
+  #filter(genotype %in% c("Col", "ddm1")) %>%
+  #ungroup() %>%
+  # Keep only paired measurements (both Col and ddm1 present)
+  #group_by(accession) %>%
+  #filter(n_distinct(genotype) == 2) %>%
+  #ungroup() %>%
+  # Keep only accessions with ≥2 replicates in BOTH genotypes
+  #group_by(accession, TE, genotype) %>%
+  #mutate(n_replicates = n_distinct(replicate)) %>%
+  #group_by(accession, TE) %>%
+  #filter(all(n_replicates >= 2)) %>%
+  #ungroup() %>%
+  #select(-n_replicates) %>%
+  # Create combined factor
+  #mutate(acc_var = paste(accession, genotype, sep = "_"))
+
+
+## Summary of replicates
+replicate_summary <- long_data_sense %>%
+  group_by(accession, TE, genotype) %>%
+  summarise(n_replicates = n_distinct(replicate), .groups = "drop") %>%
+  group_by(genotype, n_replicates) %>%
+  summarise(n_accessions = n_distinct(accession), .groups = "drop")
+
+print(replicate_summary)
+
+write.csv2(long_data_sense, "/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_long_data_with_controls.csv", sep="\t", row.names = F, quote = F)
+
+write.csv2(long_data_anti_sense, "/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sense_long_data_with_controls.csv", sep="\t", row.names = F, quote = F)
+```
+
+
+###########################################
+####### Transformation and BLUPs #######
+##########################################
+
+```{r}
+## Distribution of the phenotype
+long_data_anti_sense <- long_data_anti_sense %>%
+  mutate(TE = gsub("_AS$", "", TE))
+# TEs unique to each
+sense_only_TEs <- setdiff(long_data_sense$TE, long_data_anti_sense$TE)
+anti_only_TEs  <- setdiff(long_data_anti_sense$TE, long_data_sense$TE)
+# Filter and combine
+long_data_combined <- bind_rows(
+  long_data_sense %>% filter(TE %in% sense_only_TEs),
+  long_data_anti_sense %>% filter(TE %in% anti_only_TEs)
+)
+
+
+## Intersecting tes 
+# TEs present in both
+shared_TEs <- intersect(long_data_sense$TE, long_data_anti_sense$TE)
+
+long_data_intersecting <- inner_join(
+  long_data_sense, 
+  long_data_anti_sense, 
+  by = c("TE", "sample_id"), 
+  suffix = c("_sense", "_anti_sense")  # = not ()
+)
+```
+```{r}
+# Transform values 
+library(forecast)
+long_data_combined <- long_data_combined[long_data_combined$genotype=="ddm1",] # Select only ddm1
+long_data_combined_transformed <- long_data_combined %>%  
+  group_by(TE, genotype) %>% 
+  mutate(
+    zscale = (expression_value - mean(expression_value)) / sd(expression_value),
+    log2=log2(expression_value+1),
+    shifted = expression_value - min(expression_value) + 1,
+    lambda = BoxCox.lambda(shifted, lower = -0.5, upper = 0.5)
+  ) %>%
+  mutate(
+    boxcox = BoxCox(shifted, lambda[1])
+  ) %>%
+  ungroup()
+```
+
+
+## Visualize transformations
+```{r}
+long_data_combined_transformed %>%
+  ggplot(aes(x = zscale, fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "z scaled transformed expression, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+
+long_data_combined_transformed %>%
+  ggplot(aes(x = log2, fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "log2 transformed expression, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+
+long_data_combined_transformed %>%
+  ggplot(aes(x = boxcox, fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "boxcox transformed expression, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+```
+
+#Lambda summary
+```{r}
+lambda_summary <- long_data_transformed %>%
+  group_by(TE, genotype) %>%
+  summarise(lambda = unique(lambda), .groups = "drop")
+
+### Lambda distribution
+ggplot(lambda_summary, aes(x = lambda)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  geom_vline(xintercept = c(-0.5, 0, 0.5), linetype = "dashed", color = "red") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Distribution of Lambda Values",
+       x = "Lambda", y = "Count",
+       subtitle = "Red lines: boundaries and log transform (0)")+facet_wrap(~genotype)
+```
+
+##############################
+#######Calculate BLUPs #######
+##############################
+## BLUPs calculation and diagnostics
+```{r}
+library(tibble)
+library(tidyr)
+library(purrr)
+library(lme4)
+
+#########################
+## Calculate BLUPs with diagnostics
+#########################
+blups_zscale <- long_data_sense_transformed %>% 
+  group_by(TE) %>% 
+  nest() %>%
+  mutate(
+    model = map(data, ~ lmer(zscale ~ (1 | acc_var) + (1 | replicate) + (1|Sequencing_date), data = .x)),
+    blups_zscale = map(model, ~ ranef(.)$acc_var %>% 
+                  rownames_to_column("acc_var") %>%
+                  rename(BLUP = `(Intercept)`)),
+    fitted_resid = map2(model, data, ~ .y %>%
+                          mutate(
+                            fitted = fitted(.x), # Fitted values from the model 
+                            residuals = residuals(.x) # Residuals from the model 
+                          ))
+  )
+
+# Extract BLUPs for analysis
+blups_long <- blups_with_diagnostics %>%
+  select(TE, genotype, blups) %>%
+  unnest(blups) %>%
+  separate(acc_var, into = c("accession", "genotype"), sep = "_") %>%
+  select(accession, TE, genotype, BLUP)
+
+# Extract fitted 
+fitted_resid_long <- blups_with_diagnostics %>%
+  select(TE, genotype, fitted_resid) %>%
+  unnest(fitted_resid)
+```
+
+###########################
+### BLUPs Diagnostic plots#
+###########################
+```{r}
+# Residuals vs Fitted
+fitted_resid_long %>% 
+  filter(genotype %in% c("ddm1")) %>% 
+  ggplot(aes(fitted, residuals)) +  # Remove the data argument here
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~genotype, scales = "free") +
+  labs(title = "Residuals vs Fitted Values")
+
+# Histogram of residuals
+ggplot(fitted_resid_long, aes(x = residuals)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  facet_wrap(~genotype) +
+  labs(title = "Histogram of Residuals",
+       x = "Residuals",
+       y = "Count")
+
+## Mean vs BLUPs 
+# Make BLUPs long 
+
+# Calculate mean expression per accession-TE-genotype
+mean_expr <- long_data_transformed %>% 
+  group_by(accession, TE, genotype) %>% 
+  dplyr::summarise(
+    expr_mean_transformed = mean(transformed),
+    expr_mean_raw = mean(log2(expression_value + 1)),
+    .groups = "drop"
+  )
+
+# Merge with BLUPs and annotation 
+blups_long$accession <- as.numeric(blups_long$accession)
+blups_annot <- left_join(blups_long, te_annotation, by = c("TE" = "Transposon_Name"))
+# Merge with mean expr
+blups_annot_meanexpr <- left_join(blups_annot,mean_expr, by=c("TE", "accession", "genotype") )
+#########################
+## BLUPs vs mean within each family 
+#########################
+
+correlations <- blups_annot_meanexpr %>%
+  group_by(Transposon_Super_Family, genotype) %>%
+  summarise(
+    correlation = cor(expr_mean_transformed, BLUP, use = "complete.obs"),
+    n = n(),
+    .groups = "drop"
+  )
+
+# View correlations
+print(correlations)
+
+# Plot BLUPs vs mean expression
+blups_annot_meanexpr %>% 
+  filter(genotype %in% c("ddm1")) %>% 
+  ggplot(aes(expr_mean_transformed, BLUP)) +  # Remove data argument
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE) +
+  geom_text(data = correlations %>% filter(genotype %in% c("ddm1")),  # Filter correlations too
+            aes(x = Inf, y = Inf, 
+                label = sprintf("r = %.3f", correlation)),
+            hjust = 1.1, vjust = 1.5, size = 3) +
+  facet_wrap(~Transposon_Super_Family + genotype, scales = "free") +
+  labs(title = "BLUPs vs Mean Expression by Superfamily (transformed)",
+       x = "Mean Expression",  # Swapped labels to match axes
+       y = "BLUP")
+
+```
+
+### BLUPs visualization###
+```{r}
+# Pivot to wide format with separate columns for Col and ddm1
+blups_col <- blups_annot_meanexpr %>%
+  filter(genotype == "Col") %>%
+  distinct(accession, TE, BLUP, Transposon_Super_Family, Transposon_Family, expr_mean_transformed, expr_mean_raw) %>%
+  rename(BLUP_Col = BLUP,
+         expr_transf_Col = expr_mean_transformed,
+         expr_raw_Col = expr_mean_raw)
+
+blups_ddm1 <- blups_annot_meanexpr %>%
+  filter(genotype == "ddm1") %>%
+  distinct(accession, TE, BLUP, Transposon_Super_Family, Transposon_Family, expr_mean_transformed, expr_mean_raw) %>%
+  rename(BLUP_ddm1 = BLUP,
+         expr_transf_ddm1 = expr_mean_transformed,
+         expr_raw_ddm1 = expr_mean_raw)
+
+# Join them together
+blups_wide <- blups_col %>%
+  inner_join(blups_ddm1, by = c("accession", "TE", "Transposon_Super_Family", "Transposon_Family"))
+
+blups_wide$diff_per_TE_blup <- blups_wide$BLUP_ddm1-blups_wide$BLUP_Col
+blups_wide$diff_expr_raw <- blups_wide$expr_raw_ddm1-blups_wide$expr_raw_Col
+blups_wide$diff_expr_transf <- blups_wide$expr_transf_ddm1-blups_wide$expr_transf_Col
+
+# Then average per accession-superfamily
+blups_superfamily <- blups_wide %>%
+  group_by(accession, Transposon_Super_Family) %>%
+  summarise(
+    mean_BLUP_Col = mean(BLUP_Col, na.rm = TRUE),
+    mean_BLUP_ddm1 = mean(BLUP_ddm1, na.rm = TRUE),
+    mean_diff = mean(diff_per_TE_blup, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot histograms
+ggplot(blups_wide, aes(x = BLUP_Col)) +
+  geom_histogram(bins = 30, fill = "#FFB823", color = "black") +
+  theme_minimal(base_size = 15) +
+  labs(title = "BLUPs Col0", x = "BLUPs", y = "Count") +
+  facet_wrap(~Transposon_Super_Family, scales="free")
+
+ggplot(blups_wide, aes(x = BLUP_ddm1)) +
+  geom_histogram(bins = 30, fill = "darkblue", color = "black") +
+  theme_minimal(base_size = 15) +
+  labs(title = "BLUPs ddm1", x = "BLUPs", y = "Count") +
+  facet_wrap(~Transposon_Super_Family,scales="free")
+
+ggplot(blups_wide, aes(x = diff_per_TE)) +
+  geom_histogram(bins = 30, fill = "darkred", color = "black") +
+  theme_minimal(base_size = 15) +
+  labs(title = "BLUPs ddm1 - Col0", x = "BLUPs", y = "Count") +
+  facet_wrap(~Transposon_Super_Family,scales="free")
+
+
+library(tidyr)
+
+blups_long <- blups_wide %>%
+  pivot_longer(
+    cols = c(BLUP_Col, BLUP_ddm1, diff_per_TE),
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(variable = factor(variable, 
+                          levels = c("BLUP_Col", "BLUP_ddm1", "diff_per_TE"),
+                          labels = c("BLUPs Col0", "BLUPs ddm1", "BLUPs ddm1 - Col0")))
+
+ggplot(blups_long, aes(x = value, fill = variable)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue", "darkred")) +
+  theme_minimal(base_size = 15) +
+  labs(x = "BLUPs", y = "Count", fill = NULL) +
+  facet_grid(variable ~ Transposon_Super_Family, scales = "free") +
+  theme(legend.position = "none")
+
+```
+## Heatmap of the differences 
+```{r}
+library(pheatmap)
+library(ComplexHeatmap)
+library(circlize)
+# Prepare matrix with TEs as rows, accessions as columns
+heatmap_data <- blups_wide %>%
+  select(accession, TE, BLUP_ddm1) %>%
+  pivot_wider(names_from = accession, values_from = BLUP_ddm1) %>%  # Switch here
+  column_to_rownames("TE") %>%
+  as.matrix()
+
+# Prepare row annotation (TE superfamily)
+te_annotation <- blups_wide %>%
+  distinct(TE, Transposon_Super_Family) %>%
+  arrange(TE)
+
+# Row annotation
+# Define 10 distinct colors
+superfamily_colors <- c(
+  "#E41A1C",  # Red
+  "#377EB8",  # Blue
+  "#4DAF4A",  # Green
+  "#984EA3",  # Purple
+  "#FF7F00",  # Orange
+  "#FFFF33",  # Yellow
+  "#A65628",  # Brown
+  "#F781BF",  # Pink
+  "#999999",  # Gray
+  "#66C2A5"   # Teal
+)
+
+# Get unique superfamilies
+unique_superfamilies <- unique(te_annotation$Transposon_Super_Family)
+
+# Create named color vector
+superfamily_col <- setNames(superfamily_colors[1:length(unique_superfamilies)], 
+                            unique_superfamilies)
+
+# Row annotation with custom colors
+row_ha <- rowAnnotation(
+  Superfamily = te_annotation$Transposon_Super_Family,
+  col = list(Superfamily = superfamily_col)
+)
+
+# Color function
+min_val <- min(heatmap_data, na.rm = TRUE)
+max_val <- max(heatmap_data, na.rm = TRUE)
+
+# Symmetric scale around 0
+max_abs <- max(abs(min_val), abs(max_val))
+col_fun <- colorRamp2(c(-1, 0, 1), c("#9BC09C", "white", "#C5172E"))
+
+# Plot
+ht <- Heatmap(heatmap_data,
+        name = "ddm1-Col",
+        col = col_fun,
+        right_annotation = row_ha,
+        cluster_rows = TRUE,
+        cluster_columns = TRUE,
+        show_row_names = FALSE,
+        show_column_names = TRUE,
+        row_km = 3,
+        row_km_repeats = 1000,
+        column_km_repeats = 1000,
+        column_km = 2,
+        row_names_gp = gpar(fontsize = 8),
+        column_title = "TE Expression Change (ddm1 - Col)",
+        row_title = "TEs")
+
+draw(ht)
+
+# Extract TE clusters
+ht_draw <- draw(ht)
+row_clusters <- row_order(ht_draw)
+
+# Get cluster assignment for TEs
+te_cluster_assignment <- data.frame(
+  TE = rownames(heatmap_data),
+  cluster = rep(1:3, times = sapply(row_clusters, length))[order(unlist(row_clusters))]
+)
+
+head(te_cluster_assignment)
+```
+## Visualize clusters raw data
+```{r}
+library(ComplexHeatmap)
+te_cluster_assignment_with_annot <- left_join(te_cluster_assignment, te_annotation,by=c("TE"="TE"))
+te_cluster_assignment_with_annot_cluster1 <-te_cluster_assignment_with_annot[te_cluster_assignment_with_annot$cluster==1,]
+
+te_cl1 <- rownames(expression_df) %in%te_cluster_assignment_with_annot_cluster1$TE
+expression_df_cluster1 <- expression_df[te_cl1,]
+## Raw expression distribution 
+Heatmap(
+      log2(expression_df_cluster1+1),  # Changed from union_results to z_scaled_matrix
+      name = "log2(counts)",  # Removed plate variable
+      cluster_columns = TRUE,
+      cluster_rows = TRUE,
+      clustering_distance_columns = "euclidean",
+      show_column_names = FALSE,
+      show_row_names = FALSE,
+      show_heatmap_legend = TRUE,
+      row_km = 1,
+      row_km_repeats = 1000,
+      column_km_repeats = 1000,
+      column_km = 2,
+      #column_split = TRUE,
+      column_names_gp = gpar(fontsize = 5),
+      row_names_gp = gpar(fontsize = 5),
+      heatmap_legend_param = list(
+        title_gp = gpar(fontsize = 13),
+        labels_gp = gpar(fontsize = 13)))
+```
+## Extract TEs attributed to the certain cluster 
+```{r}
+blups_wide_cluster1 <- blups_wide$TE %in% rownames(expression_df_cluster1)
+blups_wide_cl1 <- blups_wide[blups_wide_cluster1,]
+```
+## Distribution of these TEs
+
+```{r}
+te_cluster_assignment_with_annot_cluster1_with_loc <- inner_join(te_cluster_assignment_with_annot_cluster1,te_annotation, by=c("TE"="Transposon_Name") )
+
+# Extract chromosome number from TE column (get number after AT and before TE)
+te_cluster_assignment_with_annot_cluster1_with_loc$chr <- gsub("AT(\\d+)TE.*", "\\1", te_cluster_assignment_with_annot_cluster1_with_loc$TE)
+te_cluster_assignment_with_annot_cluster1_with_loc_exp <- left_join(te_cluster_assignment_with_annot_cluster1_with_loc, long_data,by=c("TE"))
+# Create the plot
+te_cluster_assignment_with_annot_cluster1_with_loc_exp %>% 
+  filter(genotype == "ddm1") %>%
+  ggplot(aes(x = Transposon_min_Start, y = log2(expression_value + 1))) +
+  geom_point() +
+  facet_wrap(~chr, ncol=1)
+```
+
+## Average per family
+```{r}
+blups_wide_avg <- blups_wide %>% 
+  group_by(accession, Transposon_Super_Family) %>% 
+  summarise(
+    col_avg = mean(BLUP_Col, na.rm = TRUE),
+    ddm1_avg = mean(BLUP_ddm1, na.rm = TRUE),
+    ddm1_min_col = mean(diff_per_TE_blup, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Write BLUPs df output
+```{r}
+# Make accession numeric 
+#blups_wide_avg <-blups_wide_cl1
+
+blups_wide_avg$accession <- as.numeric(blups_wide_avg$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_wide_avg[!blups_wide_avg$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,col_avg,ddm1_avg,ddm1_min_col,Transposon_Super_Family)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/221_acc_superfamilies_blups_per_te/core_files/accession.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$Transposon_Super_Family)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/221_acc_superfamilies_blups_per_te"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(te == TE) %>%
+    dplyr::select(null1, accession, null2, null3, null4,col_avg,ddm1_avg,ddm1_min_col)
+  
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+
+
+
+
+## Calculate heritability
+```{r}
+long_data_transformed$accession<- as.numeric(long_data_transformed$accession)
+long_data_transformed$plate<-as.numeric(long_data_transformed$plate)
+long_data_transformed$replicate<-as.numeric(long_data_transformed$replicate)
+long_data_transformed_j <- left_join(long_data_transformed,sampleData, by=c("accession"="Accession", "plate"="Request_id", "replicate"="Replicate", "genotype"="Variant"))
+
+long_data_transformed_j <- long_data_transformed_j %>%select(TE, accession, plate, Sequencing_date, acc_var, genotype, transformed, replicate, expression_value, boxcox)
+
+heritability <- long_data_transformed_j %>%
+  filter(genotype %in% c("ddm1")) %>%
+  #na.omit() %>%  # Remove all NAs
+  group_by(TE, genotype) %>% # Heritability for each TE within genotype 
+  #filter(n() >= 5, n_distinct(acc_var) >= 3) %>%  # Sufficient data
+  group_map(~ {
+    model <- lmer(log2(expression_value+1) ~ (1|accession) + (1|replicate) + (1|plate), data = .x)
+    varcomp <- as.data.frame(VarCorr(model))
+    var_acc <- varcomp$vcov[varcomp$grp == "accession"]
+    var_replicate <- varcomp$vcov[varcomp$grp == "replicate"]
+    var_seq_date <- varcomp$vcov[varcomp$grp == "plate"]
+    var_resid <- varcomp$vcov[varcomp$grp == "Residual"]
+    h2 <- var_acc / (var_acc + var_replicate + var_seq_date + var_resid)
+    # Get residuals
+    resid <- residuals(model)
+    tibble(
+      TE = .y$TE,
+      genotype = .y$genotype,
+      heritability = h2,
+      var_acc = var_acc,
+      var_replicate = var_replicate,
+      var_seq_date = var_seq_date,
+      var_resid = var_resid,
+      residuals=list(resid)
+    )
+  }) %>%
+  bind_rows()
+
+# View results
+head(heritability)
+```
+## Visualize heritability output per family/Superfamily 
+```{r}
+## Heritability distribution
+heritability_with_family <- inner_join(te_annotation,heritability, by=c("Transposon_Name"="TE"))
+
+# Calculate the number of TEs per superfamily and genotype
+te_counts <- heritability_with_family %>%
+  group_by(genotype, Transposon_Super_Family) %>%
+  summarise(n_TEs = n_distinct(Transposon_Name), .groups = "drop") %>%
+  mutate(label = paste0(Transposon_Super_Family, "\n(n=", n_TEs, ")"))
+
+# Join back to original data
+heritability_with_family <- heritability_with_family %>%
+  left_join(te_counts, by = c("genotype", "Transposon_Super_Family"))
+
+# Plot with custom labels
+ggplot(heritability_with_family, aes(x = heritability, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Heritability per TE", x = "Heritability", y = "Count") + 
+  facet_wrap(~genotype + label, scales = "free_y")
+
+## Without labels 
+ggplot(heritability_with_family, aes(x = heritability, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Heritability per TE", x = "Heritability", y = "Count") + 
+  facet_wrap(~genotype+Transposon_Super_Family,scales = "free_y")
+
+## Residuals distribution 
+heritability %>%
+  unnest(residuals) %>%
+  ggplot(aes(x = residuals, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Distribution of Residuals by Genotype", 
+       x = "Residuals", 
+       y = "Count")+facet_wrap(~genotype)
+## Get high heritable families
+
+#write.table(heritability_with_family, "/groups/nordborg/projects/ddm1_resilencing/04_output/heritability_ind_te.csv", quote = F, row.names = F, sep="\t")
+heritability %>%
+  unnest(residuals) %>%
+  ggplot(aes(x = genotype, y = residuals, fill = genotype)) +
+  geom_boxplot(color = "black", alpha = 0.7, outlier.shape = 16, outlier.size = 2) +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Distribution of Residuals by Genotype", 
+       x = "Genotype", 
+       y = "Residuals")
+```
+
+
+## Baseline specific
+```{r}
+baseline_acc <- "6909"
+
+blups_vs_baseline <- blups_wide %>%
+  left_join(
+    blups_wide %>% 
+      filter(accession == baseline_acc) %>%
+      select(TE, baseline_BLUP_Col = BLUP_Col, baseline_BLUP_ddm1 = BLUP_ddm1),
+    by = "TE"
+  ) %>%
+  mutate(
+    # Relative to baseline
+    rel_Col = BLUP_Col - baseline_BLUP_Col,
+    rel_ddm1 = BLUP_ddm1 - baseline_BLUP_ddm1,
+    # Difference in response
+    diff_response = rel_ddm1 - rel_Col
+  )
+```
+
+
+# BlUPs for average 
+```{r}
+model_wide$accession <- as.numeric(model_wide$acc_var)
+# Join with phenotype info
+model_wide$accession <- as.numeric(model_wide$accession)
+
+## Remove accessions from Tom's list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- model_wide[!model_wide$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+
+long_df_final2 <- long_df_final %>% dplyr::select(null1, accession, null2, null3, null4,Col,ddm1,diff)
+
+write.table(long_df_final2,"/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/maternally_expressed_tes/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam", quote = FALSE,sep = "\t", row.names = FALSE, col.names = FALSE)
+```
+
+

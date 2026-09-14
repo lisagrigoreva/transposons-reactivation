@@ -1,0 +1,15 @@
+core.*
+*.snapshot
+.RDataTmp
+*.csv
+*.rdf
+*.json
+*.png
+*.pack
+.Rproj.user
+*.RData
+*.RData
+*.RData
+*.RData
+*.bam
+*.RData

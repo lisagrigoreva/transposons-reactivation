@@ -1,0 +1,1008 @@
+---
+title: "008_gemma_gwas_results"
+output: html_document
+date: "2024-05-08"
+---
+# Upload GEMMA results 
+
+```{r}
+library(qqman)
+```
+
+## Read common output for all TEs 
+```{r}
+library(data.table)
+gemma_results_r1 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm_minus_col_average_per_replicate_union_set/output/repl1.maf002.assoc.txt" ,header=T)
+
+gemma_results_r2 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm_minus_col_average_per_replicate_union_set/output/repl2.maf002.assoc.txt" ,header=T)
+
+gemma_results_r3 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm_minus_col_average_per_replicate_union_set/output/repl3.maf002.assoc.txt" ,header=T)
+
+gemma_results_avg <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm_minus_col_average_per_replicate_union_set/output/repl4.assoc.txt" ,header=T)
+
+```
+
+```{r}
+par(mar = c(5, 5, 2, 2))  # Adjust margins to give more space
+qq <- qq(gemma_results_avg$p_wald, 
+   cex.axis = 2, 
+   cex.lab = 2)
+
+manhattan(gemma_results_avg, chr = "chr", bp = "ps", snp = "rs", p = "p_wald", 
+         col = c("#89B9AD", "#85586F"), 
+         main = "Manhattan Plot of GEMMA Result", 
+         ylim = c(0, 8), cex.axis = 1.5)
+```
+
+
+# Manhattan and qqplot
+```{r}
+# Manhattan plot 
+
+### Plot with highlighted points
+manhattan(gemma_results_avg, chr = "chr", bp = "ps", snp = "rs", p = "p_wald", 
+         col = c("#89B9AD", "#85586F"), 
+         main = "Manhattan Plot of GEMMA Result", 
+         ylim = c(0, 8), cex.axis = 1.5)
+
+par(mar = c(5, 5, 2, 2))  # Adjust margins to give more space
+qq <- qq(gemma_results_avg$p_wald, 
+   cex.axis = 2, 
+   cex.lab = 2)
+
+
+gemma_results_avg$rs <- paste0( "rs", gemma_results_avg$ps,"_",gemma_results_avg$chr)
+res <- gemma_results_avg %>% select(rs,chr, ps, p_wald)
+colnames(res) <- c("SNP","CHR","BP","P")
+
+snps_of_interest <- res[
+  (res$CHR == "1" & res$BP > 17886036 & res$BP < 17892632) | #AGO1
+  (res$CHR == "2" & res$BP > 16714460 & res$BP < 16723718)| # NRPE1
+   (res$CHR == "1" & res$BP > 11188293 & res$BP < 11192573) | #AGO3
+   (res$CHR == "4" & res$BP > 16336291 & res$BP < 16340314) | #CDCA7a
+    (res$CHR == "4" & res$BP > 10414428 & res$BP < 10421209) |#CMT2
+   (res$CHR == "5" & res$BP > 26648897 & res$BP < 26653191)  | #DDM1
+    (res$CHR == "5" & res$BP > 19932114 & res$BP <19938470 ) | #MET1
+    (res$CHR == "5" & res$BP > 15837178 & res$BP <15840678 ),] #VIM3
+
+snps_of_interest <- snps_of_interest$SNP
+
+res <- res[res$P>0,]
+res <- res[res$P!="Inf",]
+manhattan(res, highlight = snps_of_interest)
+```
+
+```{r}
+
+gemma_results_avg$rs <- paste0( "rs", gemma_results_avg$ps,"_",gemma_results_avg$chr)
+
+res <- gemma_results_avg %>% select(rs,chr, ps, p_wald)
+colnames(res) <- c("SNP","CHR","BP","P")
+
+snps_of_interest <- res[
+  (res$CHR == "1" & res$BP > 17886036 & res$BP < 17892632) | #AGO1
+  (res$CHR == "2" & res$BP > 16714460 & res$BP < 16723718)| # NRPE1
+   (res$CHR == "1" & res$BP > 11188293 & res$BP < 11192573) | #AGO3
+   (res$CHR == "4" & res$BP > 16336291 & res$BP < 16340314) | #CDCA7a
+    (res$CHR == "4" & res$BP > 10414428 & res$BP < 10421209) |#CMT2
+   (res$CHR == "5" & res$BP > 26648897 & res$BP < 26653191)  | #DDM1
+    (res$CHR == "5" & res$BP > 19932114 & res$BP <19938470 ) | #MET1
+    (res$CHR == "5" & res$BP > 15837178 & res$BP <15840678 ),] #VIM3
+
+
+snps_of_interest <- res[
+  (res$CHR == "1" & res$BP=="21670799")|
+    (res$CHR == "4" & res$BP=="5434265") |
+    (res$CHR == "5" & res$BP=="5664278"),]
+
+gemma_results_avg$chr <- as.numeric(gemma_results_avg$chr)
+highlight_snps <- snps_of_interest$SNP
+
+
+n_tests <- nrow(gemma_results_avg)  # Number of tests (SNPs)
+bonf_threshold <- -log10(0.05/n_tests)
+
+manhattan(gemma_results_avg, 
+         chr = "chr", 
+         bp = "ps", 
+         snp = "rs", 
+         p = "p_wald", 
+         col = c("grey", "#2C3930"), 
+         main = "Manhattan Plot of GEMMA Result", 
+         cex.axis = 1.5,
+         suggestiveline = -log10(1e-5),
+         genomewideline=F,
+         highlight = highlight_snps)+theme_bw(base_size = 14)
+
+
+
+gemma_results_avg_1 <-gemma_results_avg[gemma_results_avg$chr=="4" | gemma_results_avg$ps>4000000 & gemma_results_avg$ps<5000000 ,]
+manhattan(gemma_results_avg_1, 
+         chr = "chr", 
+         bp = "ps", 
+         snp = "rs", 
+         p = "p_wald", 
+         col = c("grey", "#2C3930"), 
+         main = "Manhattan Plot of GEMMA Result", 
+         cex = 2,              # Size of regular points
+         highlight.cex = 4,    # Size of highlighted points (increase this value to make them larger)
+         suggestiveline = -log10(1e-5),
+         genomewideline = F)+
+         #highlight = highlight_snps) +
+  theme_bw(base_size = 14)
+
+
+gemma_results_avg_1 <-gemma_results_avg[gemma_results_avg$chr=="4",]
+
+gemma_results_avg_1$rs <- paste0( "rs", gemma_results_avg_1$ps,"_",gemma_results_avg_1$chr)
+
+highlight <- gemma_results_avg_1[-log10(gemma_results_avg_1$p_wald)>-log10(1e-5),]
+highlight_snps <- highlight$rs
+
+manhattan(gemma_results_avg_1, 
+          chr = "chr", 
+          bp = "ps", 
+          snp = "rs", 
+          p = "p_wald", 
+          col = "darkgrey", 
+          main = "Manhattan Plot of GEMMA Result", 
+          cex = 3,              
+          suggestiveline = -log10(1e-5),
+          genomewideline = F,
+          xlab = "Position", 
+          highlight = highlight_snps,
+          xlim = c(5000000,5800000)) +
+    theme_bw(base_size = 14)
+
+```
+
+```{r}
+qq(long_data_avg$p_value, 
+   main = "Q-Q Plot of GWAS p-values",
+   cex = 1,
+   cex.axis = 1.2,
+   cex.lab = 1.2)
+```
+
+```{r}
+manhattan(gemma_results_avg_1, chr = "chr", bp = "ps", snp = "rs", p = "p_wald", 
+         col = c("#89B9AD", "#85586F"), 
+         main = "Manhattan Plot of GEMMA Result", 
+         ylim = c(0, 10), cex.axis = 1.5) 
+```
+
+
+
+# Put studies together 
+```{r}
+# Sequential joins
+combined_results <- gemma_results_r1 %>%
+  inner_join(gemma_results_r2, by = c("chr", "ps"), suffix = c("_r1", "_r2")) %>%
+  inner_join(gemma_results_r3, by = c("chr", "ps"), suffix = c("_r2", "_r3")) %>%
+  inner_join(gemma_results_avg, by = c("chr", "ps"), suffix = c("_r3", "_avg"))
+
+# To check the structure
+combined_results <- combined_results %>% dplyr::select(chr,ps,p_wald_r1,p_wald_r2,p_wald_r3,p_wald_avg)
+combined_results <- as.data.frame(combined_results)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Reshape data to long format
+long_data <- combined_results %>%
+  dplyr::select(chr, ps, starts_with("p_wald")) %>%
+  pivot_longer(
+    cols = starts_with("p_wald"),
+    names_to = "replicate",
+    values_to = "p_value"
+  ) %>%
+  mutate(
+    logp = -log10(p_value),
+    chr = factor(chr), # Make sure chromosome is a factor
+    replicate = factor(replicate, 
+                      levels = c("p_wald_r1", "p_wald_r2", "p_wald_r3", "p_wald_avg"),
+                      labels = c("R1", "R2", "R3", "Average"))
+  )
+
+# Create a color vector for all chromosomes
+n_chr <- length(unique(long_data$chr))
+chr_colors <- rep(c("#89B9AD", "#85586F"), ceiling(n_chr/2))[1:n_chr]
+long_data$chr <- as.factor(long_data$chr)
+names(chr_colors) <- levels(long_data$chr)
+
+# Create the plot
+
+# Order a df 
+long_data <-long_data[order(long_data$chr, long_data$ps),]
+
+## Calculate a fdr 
+n_tests <- nrow(combined_results)  # Number of tests (SNPs)
+bonf_threshold <- -log10(0.05/n_tests)  # Bonferroni correction
+#combined_results$bh_adjusted <- p.adjust(combined_results$p_wald_r1, method="BH")
+# Find BH threshold where adjusted p-value = 0.05
+#bh_threshold <- combined_results[combined_results$bh_adjusted<=0.1,]
+
+# Print the thresholds
+cat("Bonferroni threshold:", (bonf_threshold), "\n")
+
+
+ggplot(long_data, aes(x = ps, y = logp, color = chr)) +
+  geom_point(size = 0.5, alpha = 0.8) +
+  facet_grid(replicate ~ chr, scales = "free_x", space = "free_x") +
+  scale_color_manual(values = chr_colors) +
+  geom_hline(yintercept = bonf_threshold, color = "red", linetype = "dashed") +
+  geom_hline(yintercept = -log10(1e-5), color = "blue", linetype = "dashed") +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    strip.background = element_rect(fill = "white"),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "Chromosome",
+    y = "-log10(p-value)",
+    title = "Manhattan Plots for All Replicates"
+  )+scale_x_continuous(
+    labels = function(x) paste0(x/1000000),
+    breaks = scales::pretty_breaks(n = 3))
+
+
+```
+
+
+## Get a proximity to the gene
+```{r}
+# Read annotation
+annotation_tair10 <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/Araport11_GFF3_genes_transposons.current.gff", header=F)
+annotation_tair10$V1 <- gsub("Chr","", annotation_tair10$V1)
+annotation_tair10 <- annotation_tair10[annotation_tair10$V3=="gene" ,] 
+annotation_tair10 <- annotation_tair10 %>% select(V1,V4,V5,V9)
+```
+
+```{r}
+significance_threshold <- 5.5 ## Needs to be adjusted 
+significant_snps <- long_data[(-log10(long_data$p_value)) >significance_threshold, ]
+head(significant_snps)
+#significant_snps <-significant_snps[significant_snps$chr=="4", ]
+```
+#Map significant SNPs to the genes 
+```{r}
+####FIND variants near genes###
+
+max_upstream_distance <- 1  # Adjust as necessary
+max_downstream_distance <- 1  # Adjust as necessary
+snps_near_genes <- vector("list", length = nrow(significant_snps))
+# Loop through each SNP to find if it's inside, upstream, or downstream of any gene
+for (i in 1:nrow(significant_snps)) {
+  snp <- significant_snps[i, ]
+  genes_on_chr <- annotation_tair10[annotation_tair10$V1 == snp$chr, ]
+  is_near_or_inside_gene <- (genes_on_chr$V4 - max_upstream_distance <= snp$ps & snp$ps <= genes_on_chr$V5 + max_downstream_distance) |
+    (genes_on_chr$V4 <= snp$ps & snp$ps <= genes_on_chr$V5)
+  
+  if (any(is_near_or_inside_gene)) {
+    temp_df <- genes_on_chr[is_near_or_inside_gene, ]
+    temp_df$snp_position <- snp$ps
+    temp_df$chromosome <- snp$chr 
+    temp_df$replicate <- snp$replicate
+    temp_df$pval <- -log10(snp$p_value)
+    snps_near_genes[[i]] <- temp_df
+  } else {
+    snps_near_genes[[i]] <- NULL
+  }
+}
+
+snps_near_genes_df <- do.call(rbind, lapply(snps_near_genes, function(df) {
+  if (is.null(df)) return(NULL)
+  df
+}))
+
+```
+
+## Get top genes per replicate
+```{r}
+# Function to get top 3 genes per chromosome for a specific replicate
+get_top_genes <- function(data, rep) {
+  # Filter for specific replicate
+  rep_data <- data[data$replicate == rep,]
+  
+  # Group by chromosome and get top 3 genes based on p.value
+  top_genes <- rep_data %>%
+    group_by(chromosome) %>%
+    arrange(pval) %>%
+    slice_head(n = 3)
+    
+  return(top_genes)
+}
+
+# Get results for each replicate
+R1_top <- get_top_genes(snps_near_genes_df, "R1")
+R2_top <- get_top_genes(snps_near_genes_df, "R2")
+R3_top <- get_top_genes(snps_near_genes_df, "R3")
+R4_top <- get_top_genes(snps_near_genes_df, "Average")
+
+# Print results for each replicate
+replicates <- c("R1", "R2", "R3", "Average")
+results_list <- list(R1_top, R2_top, R3_top, R4_top)
+
+
+# Alternatively, combine all results into one dataframe
+all_top_genes <- bind_rows(R1_top, R2_top, R3_top, R4_top)
+all_top_genes
+```
+
+## Individual TE 
+```{r}
+library(data.table)
+gemma_results_r1 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_unioin_set_filtered_te_gene_overlap/output/combined_TE_pvalues_repl1_20250221.txt" ,header=T)
+
+gemma_results_r2 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_unioin_set_filtered_te_gene_overlap/output/combined_TE_pvalues_repl2_20250221.txt" ,header=T)
+
+gemma_results_r3 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_unioin_set_filtered_te_gene_overlap/output/combined_TE_pvalues_repl3_20250221.txt" ,header=T)
+
+gemma_results_avg <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_unioin_set_filtered_te_gene_overlap/output/combined_TE_pvalues_avg_20250221.txt" ,header=T)
+
+
+```
+
+## Combine pvalues 
+# Stoffer's method 
+```{r}
+library(poolr)
+p_value_columns1 <- grep("^p_wald", names(gemma_results_r1), value = TRUE)
+p_value_columns2 <- grep("^p_wald", names(gemma_results_r2), value = TRUE)
+p_value_columns3 <- grep("^p_wald", names(gemma_results_r3), value = TRUE)
+p_value_columns4 <- grep("^p_wald", names(gemma_results_avg), value = TRUE)
+
+# Function to combine p-values for each row
+combine_p_values <- function(row) {
+  # Remove any missing values
+  p_values <- na.omit(row)
+  # If we have any p-values, combine them
+  if(length(p_values) > 0) {
+    return(stouffer(p_values)$p)
+  } else {
+    return(NA)
+  }
+}
+
+gemma_results_r1$combined_p1 <- apply(gemma_results_r1[, ..p_value_columns1], 
+                                1, 
+                                combine_p_values)
+gemma_results_r2$combined_p2 <- apply(gemma_results_r2[, ..p_value_columns2], 
+                                1, 
+                                combine_p_values)
+gemma_results_r3$combined_p3 <- apply(gemma_results_r3[, ..p_value_columns3], 
+                                1, 
+                                combine_p_values)
+gemma_results_avg$combined_p4 <- apply(gemma_results_avg[, ..p_value_columns4], 
+                                1, 
+                                combine_p_values)
+## Select 
+
+gemma_results_r1 <- gemma_results_r1 %>% dplyr::select(chr,ps,combined_p1)
+gemma_results_r2 <- gemma_results_r2 %>% dplyr::select(chr,ps,combined_p2)
+gemma_results_r3 <- gemma_results_r3 %>% dplyr::select(chr,ps,combined_p3)
+gemma_results_r4 <- gemma_results_avg %>% dplyr::select(chr,ps,combined_p4)
+```
+## Make a common plot 
+```{r}
+
+combined_results <- gemma_results_r1 %>%
+  inner_join(gemma_results_r2, by = c("chr", "ps"), suffix = c("_r1", "_r2")) %>%
+  inner_join(gemma_results_r3, by = c("chr", "ps"), suffix = c("_r2", "_r3")) %>%
+  inner_join(gemma_results_r4, by = c("chr", "ps"), suffix = c("_r3", "_avg"))
+
+long_data <- combined_results %>%
+  dplyr::select(chr, ps, starts_with("combined_")) %>%
+  pivot_longer(
+    cols = starts_with("combined_"),
+    names_to = "replicate",
+    values_to = "p_value"
+  ) %>%
+  mutate(
+    logp = -log10(p_value),
+    chr = factor(chr), # Make sure chromosome is a factor
+    replicate = factor(replicate, 
+                      levels = c("combined_p1", "combined_p2", "combined_p3", "combined_p4"),
+                      labels = c("R1", "R2", "R3", "Average"))
+  )
+
+# Create a color vector for all chromosomes
+n_chr <- length(unique(long_data$chr))
+chr_colors <- rep(c("#89B9AD", "#85586F"), ceiling(n_chr/2))[1:n_chr]
+long_data$chr <- as.factor(long_data$chr)
+names(chr_colors) <- levels(long_data$chr)
+
+# Create the plot
+
+# Order a df 
+long_data <-long_data[order(long_data$chr, long_data$ps),]
+
+## Calculate a fdr 
+n_tests <- nrow(combined_results)  # Number of tests (SNPs)
+bonf_threshold <- -log10(0.05/n_tests)  # Bonferroni correction
+#combined_results$bh_adjusted <- p.adjust(combined_results$p_wald_r1, method="BH")
+# Find BH threshold where adjusted p-value = 0.05
+#bh_threshold <- combined_results[combined_results$bh_adjusted<=0.1,]
+
+
+ggplot(long_data, aes(x = ps, y = logp, color = chr)) +
+  geom_point(size = 0.5, alpha = 0.8) +
+  facet_grid(replicate ~ chr, scales = "free_x", space = "free_x") +
+  scale_color_manual(values = chr_colors) +
+  #geom_hline(yintercept = bonf_threshold, color = "red", linetype = "dashed") +
+  #geom_hline(yintercept = -log10(1e-5), color = "blue", linetype = "dashed") +
+  theme_bw(base_size=13) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    strip.background = element_rect(fill = "white"),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "Chromosome",
+    y = "-log10(p-value)",
+    title = "Manhattan Plots for All Replicates"
+  )+scale_x_continuous(
+    labels = function(x) paste0(x/1000000),
+    breaks = scales::pretty_breaks(n = 3))
+
+
+
+```
+
+
+## Get mapping to the gene
+
+```{r}
+significance_threshold <- 130 ## Needs to be adjusted 
+significant_snps <- long_data[(-log10(long_data$p_value)) >significance_threshold, ]
+head(significant_snps)
+#significant_snps <-significant_snps[significant_snps$chr=="4", ]
+```
+#Map significant SNPs to the genes 
+```{r}
+####FIND variants near genes###
+
+max_upstream_distance <- 1  # Adjust as necessary
+max_downstream_distance <- 1  # Adjust as necessary
+snps_near_genes <- vector("list", length = nrow(significant_snps))
+# Loop through each SNP to find if it's inside, upstream, or downstream of any gene
+for (i in 1:nrow(significant_snps)) {
+  snp <- significant_snps[i, ]
+  genes_on_chr <- annotation_tair10[annotation_tair10$V1 == snp$chr, ]
+  is_near_or_inside_gene <- (genes_on_chr$V4 - max_upstream_distance <= snp$ps & snp$ps <= genes_on_chr$V5 + max_downstream_distance) |
+    (genes_on_chr$V4 <= snp$ps & snp$ps <= genes_on_chr$V5)
+  
+  if (any(is_near_or_inside_gene)) {
+    temp_df <- genes_on_chr[is_near_or_inside_gene, ]
+    temp_df$snp_position <- snp$ps
+    temp_df$chromosome <- snp$chr 
+    temp_df$replicate <- snp$replicate
+    temp_df$pval <- -log10(snp$p_value)
+    snps_near_genes[[i]] <- temp_df
+  } else {
+    snps_near_genes[[i]] <- NULL
+  }
+}
+
+snps_near_genes_df <- do.call(rbind, lapply(snps_near_genes, function(df) {
+  if (is.null(df)) return(NULL)
+  df
+}))
+
+
+snps_near_genes_df_r <- snps_near_genes_df[snps_near_genes_df$replicate=="R1",]
+```
+
+## Get top genes per replicate
+```{r}
+# Function to get top 3 genes per chromosome for a specific replicate
+get_top_genes <- function(data, rep) {
+  # Filter for specific replicate
+  rep_data <- data[data$replicate == rep,]
+  
+  # Group by chromosome and get top 3 genes based on p.value
+  top_genes <- rep_data %>%
+    group_by(chromosome) %>%
+    arrange(pval) %>%
+    slice_head(n = 3)
+    
+  return(top_genes)
+}
+
+# Get results for each replicate
+R1_top <- get_top_genes(snps_near_genes_df, "R1")
+R2_top <- get_top_genes(snps_near_genes_df, "R2")
+R3_top <- get_top_genes(snps_near_genes_df, "R3")
+R4_top <- get_top_genes(snps_near_genes_df, "Average")
+
+# Print results for each replicate
+replicates <- c("R1", "R2", "R3", "Average")
+results_list <- list(R1_top, R2_top, R3_top, R4_top)
+
+
+# Alternatively, combine all results into one dataframe
+all_top_genes <- bind_rows(R1_top, R2_top, R3_top, R4_top)
+all_top_genes
+```
+
+
+
+## Clustering
+
+## Individual TE 
+```{r}
+library(data.table)
+gemma_results_r1 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_common_set/output/combined_TE_pvalues_repl1_20250214.txt" ,header=T)
+
+gemma_results_r2 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_common_set/output/combined_TE_pvalues_repl2_20250214.txt" ,header=T)
+
+gemma_results_r3 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_common_set/output/combined_TE_pvalues_repl3_20250214.txt" ,header=T)
+
+gemma_results_avg <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm1_minus_col_for_individual_te_unioin_set_filtered_te_gene_overlap/output/combined_TE_pvalues_avg_20250221.txt" ,header=T)
+
+```
+
+```{r}
+### Optimized Code
+# 1. Initial data filtering and conversion
+selected_snps <- gemma_results_avg[gemma_results_avg$chr == "5", ] %>%
+  mutate(across(starts_with("p_wald_"), 
+                ~-log10(as.numeric(.)), 
+                .names = "converted_{.col}"))
+
+# 2. More efficient pivoting with direct -log10 transformation
+df_long <- selected_snps %>%
+  dplyr::select(ps, chr, starts_with("converted_")) %>%
+  pivot_longer(
+    cols = starts_with("converted_"),
+    names_to = "analysis",
+    values_to = "p_value"
+  ) %>%
+  filter(!is.infinite(p_value), 
+         p_value > 3) %>%
+  # Remove analyses where all p-values are > 5
+  group_by(analysis) %>%
+  filter(n() > 0) %>%
+  ungroup()
+
+# 3. More efficient plotting
+min_p <- min(df_long$p_value)
+median_p <- median(df_long$p_value)
+max_p <- max(df_long$p_value)
+ # Sort
+ggplot(df_long, aes(x = ps, y = analysis, color = p_value)) +
+  geom_point(alpha = 0.7, size = 0.5) +
+  scale_color_gradientn(
+    colors = c("white", "#FFB4B4", "#CD113B"),
+    values = scales::rescale(c(1, 4, 20)), 
+    name = "-log10(P-Value)",
+    limits = c(min(df_long$p_value), max(df_long$p_value))  # Set explicit limits
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )+xlim(3000000,7000000)
+
+
+
+
+#df_long_filtered_interest_gene <- df_long_filtered[df_long_filtered$p_value_log10>=7 & df_long_filtered$ps>20000000,]
+```
+## Cluster values heriticaly
+```{r}
+# First, let's prepare the data for clustering
+library(ggplot2)
+library(tidyverse)
+library(dendextend)
+library(grid)
+library(gridExtra)
+library(fastcluster)  
+
+# Assuming df_long has your data
+# Create a matrix for clustering
+
+
+library(fastcluster)  
+## Filter to get only the most significant pvalues 
+df_long_filtered <- df_long[df_long$p_value>5,]
+
+matrix_for_clustering <- df_long_filtered %>%
+  pivot_wider(names_from = ps, values_from = p_value) %>%
+  column_to_rownames("analysis")
+# Fast hierarchical clustering
+hc <- fastcluster::hclust(dist(matrix_for_clustering), method = "complete")
+dend <- as.dendrogram(hc)
+
+# Get the order of labels after clustering
+ordered_labels <- labels(dend)
+
+# Modify your original data with the new ordering
+df_long_filtered$analysis <- factor(df_long_filtered$analysis, levels = ordered_labels)
+
+# Create the main plot
+ggplot(df_long_filtered, aes(x = ps, y = analysis, color = (p_value))) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_gradientn(
+    colors = c("white", "#FFB4B4", "#CD113B"),
+    name = "-log10(P-Value)"
+  ) +
+  theme(
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank())+labs(x = "")
+
+
+```
+
+# Manhattan and qqplot
+```{r}
+# Manhattan plot 
+gemma_results$rs="."
+manhattan(gemma_results, chr = "chr", bp = "ps", snp = "rs", p = "combined_p", 
+          col = c("#89B9AD", "#85586F"), 
+          suggestiveline = 0.05, genomewide = 5e-8, 
+          main = "Manhattan Plot of GEMMA Result", 
+          ylim = c(0, 300), cex.axis = 1.5)
+
+#Q-Q plot
+#par(mar = c(5, 5, 2, 2))  # Adjust margins to give more space
+#qq <- qq(gemma_results$p_wald, 
+#   cex.axis = 2, 
+#   cex.lab = 2)
+
+```
+
+```{r}
+library(Cairo)
+library(qqman)
+
+# Set up the plot
+CairoPNG("/groups/nordborg/projects/ddm1_resilencing/04_output/atocopia89_average_expr_log2_diff.png", 
+         width = 2400, height = 1200, res = 300)
+
+# Create a layout with 1 row and 2 columns
+layout(matrix(c(1, 2), nrow = 1, ncol = 2),
+       widths = c(2, 1))  # Manhattan plot takes 2/3 of the width, QQ plot 1/3
+
+# Manhattan plot (left column)
+par(mar = c(5, 5, 3, 2))
+manhattan(gemma_results, chr = "chr", bp = "ps", snp = "rs", p = "p_wald", 
+          col = c("#89B9AD", "#85586F"), 
+          main = "Figure A: Manhattan Plot of GEMMA Result", 
+          ylim = c(0, 10), cex = 0.8, cex.axis = 0.8, cex.lab = 0.8, cex.main = 0.8)
+
+# QQ plot (right column)
+par(mar = c(3, 3, 4, 3))
+qq(gemma_results$p_wald, 
+   main = "Figure B: Q-Q Plot", 
+   cex = 0.8, cex.axis = 0.8, cex.lab = 0.8, cex.main = 0.8)
+
+dev.off()
+```
+
+```{r}
+# Calculate BH thresholds
+alpha <- 0.05
+bonf_threshold <- -log10(alpha / nrow(gemma_results))
+```
+
+```{r}
+#adjusted_pvalues <- p.adjust(pvalues, method = "BH")
+#gemma_results_chr1$bh_adjusted <- p.adjust(gemma_results_chr1$p_score, method = "BH", n = length(gemma_results_chr1$p_scor))
+
+```
+
+
+## Manhattan plot with highlighted SNPs
+
+```{r}
+
+# Your SNPs to highlight
+gemma_results$rs <- gemma_results$ps
+highlight_snps <-  c("10414588", "10414588", "17272559")  # Replace with your actual SNP IDs
+
+# Manhattan plot with highlighted SNPs
+manhattan(gemma_results, 
+          chr = "chr", 
+          bp = "ps", 
+          snp = "rs", 
+          p = "p_wald", 
+          col = c("#89B9AD", "#85586F"), 
+          main = "Manhattan Plot of GEMMA Result", 
+          ylim = c(0, 10), 
+          cex.axis = 1.5, 
+          highlight = highlight_snps)
+
+
+```
+## DDM1-related significant genes
+```{r}
+#DDM1 check AT5G66750
+significant_snps <-gemma_results 
+significant_snps[significant_snps$ps >=26648897 & significant_snps$chr=="5" & significant_snps$ps<=26653191 & significant_snps$chr=="5",]
+#Met1 check AT5G49160
+significant_snps[significant_snps$ps >=19932114 & significant_snps$chr=="5" &  significant_snps$ps<=19938470 & significant_snps$chr=="5" ,]
+#CMT2 check AT4G19020
+significant_snps[significant_snps$ps >=10414428 & significant_snps$chr=="4"  & significant_snps$ps<=10421209 & significant_snps$chr=="4" ,]
+#CMT3 check AT1G69770
+significant_snps[significant_snps$ps >=26248118& significant_snps$chr=="1"  & significant_snps$ps<=26253687 & significant_snps$chr=="1" ,]
+#AT4G34110 (CDCA7a) check
+significant_snps[significant_snps$ps >=16336291 & significant_snps$chr=="4"  & significant_snps$ps<=16340314 &  significant_snps$chr=="4" ,]
+#AT2G23530 (CDCA7b) check
+significant_snps[significant_snps$ps >=10020461 &  significant_snps$chr=="2"  & significant_snps$ps<=10022947 & significant_snps$chr=="2" ,]
+#VIM3
+significant_snps[significant_snps$ps >=15837178 & significant_snps$ps<=15840678 & significant_snps$chr=="1",]
+```
+### Create a metaGWAS peak 
+
+```{r}
+# Load required packages
+library(data.table)  # For efficient data handling
+library(metap)       # For combining p-values
+
+# Set your input and output folders
+input_folder <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/each_te_log2_difference/output/test/"
+output_folder <- input_folder
+
+# Step 1: Get list of all files we want to analyze
+# Find all files ending with "repl2.assoc.txt"
+files_to_read <- list.files(input_folder, 
+                           pattern = "*.repl1.assoc.txt", 
+                           full.names = TRUE)
+
+# Step 2: Read and process each file
+print("Reading files...")
+all_data <- list()  # Create empty list to store our data
+
+# Loop through each file
+for(i in 1:length(files_to_read)) {
+  # Read the file
+  current_data <- fread(files_to_read[i])
+  
+  # Get the TE name from filename (remove "_replX.assoc.txt" part)
+  filename <- basename(files_to_read[i])  # Get just the filename
+  te_name <- gsub("_repl[0-9]+\\.assoc\\.txt$", "", filename)
+  
+  # Keep only needed columns and rename p-value column
+  current_data <- current_data[, .(chr, ps, p_wald)]
+  setnames(current_data, "p_wald", paste0("p_wald_", te_name))
+  
+  # Store in our list
+  all_data[[i]] <- current_data
+  
+  # Print progress
+  print(paste("Processed file", i, "of", length(files_to_read)))
+}
+
+# Step 3: Combine all data files
+print("Combining all data...")
+# Start with the first dataset
+combined_data <- all_data[[1]]
+
+# Add each additional dataset
+for(i in 2:length(all_data)) {
+  combined_data <- merge(combined_data, 
+                        all_data[[i]], 
+                        by = c("chr", "ps"), 
+                        all = TRUE)
+  print(paste("Combined dataset", i))
+}
+
+# Step 4: Calculate combined p-values
+print("Calculating combined p-values...")
+
+# Find all p-value columns (they start with "p_wald")
+p_value_columns <- grep("^p_wald", names(combined_data), value = TRUE)
+
+# Function to combine p-values for each row
+combine_p_values <- function(row) {
+  # Remove any missing values
+  p_values <- na.omit(row)
+  
+  # If we have any p-values, combine them
+  if(length(p_values) > 0) {
+    return(fisher(p_values, method = "fisher")$p)
+  } else {
+    return(NA)
+  }
+}
+
+# Add column for number of tests per position
+combined_data$n_tests <- apply(combined_data[, ..p_value_columns], 
+                             1, 
+                             function(x) sum(!is.na(x)))
+
+# Calculate combined p-value for each position
+combined_data$combined_p <- apply(combined_data[, ..p_value_columns], 
+                                1, 
+                                combine_p_values)
+
+# Calculate FDR (adjusted p-values)
+combined_data$fdr <- p.adjust(combined_data$combined_p, method = "BH")
+
+# Step 5: Prepare final results
+# Keep only the columns we want and sort by chromosome and position
+final_results <- combined_data[, .(chr, ps, combined_p, fdr, n_tests)]
+final_results <- final_results[order(chr, ps)]
+
+# Step 6: Save results
+output_file <- paste0(output_folder, 
+                     "combined_TE_pvalues_with_FDR_repl2_", 
+                     format(Sys.time(), "%Y%m%d"), 
+                     ".txt")
+fwrite(final_results, output_file)
+
+# Step 7: Print summary of results
+print("Summary of Results:")
+print(paste("Total positions analyzed:", nrow(final_results)))
+print(paste("Significant results (FDR < 0.05):", 
+           sum(final_results$fdr < 0.05, na.rm = TRUE)))
+print(paste("Significant results (FDR < 0.01):", 
+           sum(final_results$fdr < 0.01, na.rm = TRUE)))
+```
+
+```{r}
+# Read files and extract TE names
+assoc_files <- list.files("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/each_te_log2_difference/output/", 
+                         pattern = "*.repl2.assoc.txt", 
+                         full.names = TRUE)
+
+# Read files into a list of data.tables with TE names as column identifiers
+assoc_list <- pblapply(seq_along(assoc_files), function(i) {
+  dt <- fread(assoc_files[i])
+  # Extract TE name from filename
+  te_name <- sub("_repl[0-9]+\\.assoc\\.txt$", "", basename(assoc_files[i]))
+  # Rename p_wald column with TE name
+  setnames(dt, "p_wald", paste0("p_wald_", te_name))
+  dt <- dt[, .(chr, ps, get(paste0("p_wald_", te_name)))]
+  return(dt)
+})
+
+assoc_list <- pblapply(seq_along(assoc_files), function(i) {
+  dt <- assoc_list[[i]]  # Use existing data
+  te_name <- sub("_repl[0-9]+\\.assoc\\.txt$", "", basename(assoc_files[i]))
+  new_col <- paste0("p_wald_", te_name)
+  # Rename the V3 column to proper name
+  setnames(dt, "V3", new_col)
+  return(dt)
+})
+
+# Merge assoc tables 
+for (i in seq_along(assoc_list)) {
+  setkey(assoc_list[[i]], chr, ps)
+}
+
+# Start with first data.table
+library(progress)
+
+# Create progress bar
+pb <- progress_bar$new(
+  format = "Merging [:bar] :percent eta: :eta",
+  total = length(assoc_list) - 1,
+  clear = FALSE,
+  width = 60
+)
+
+# Start with first data.table
+merged_assoc <- assoc_list[[1]]
+
+# Perform sequential joins with progress bar
+for (i in 2:length(assoc_list)) {
+  merged_assoc <- merge.data.table(merged_assoc, 
+                                  assoc_list[[i]], 
+                                  all = TRUE)
+  pb$tick()
+}
+# Extract p-value columns
+pval_cols <- grep("^p_wald", names(merged_assoc), value = TRUE)
+
+# Apply Fisher's method to combine p-values for each position
+merged_assoc[, combined_p := apply(.SD, 1, function(p) {
+  p <- na.omit(p)  # Remove NA values
+  if (length(p) > 0) {
+    fisher(p, method = "fisher")$p  # Combine using Fisher's method
+  } else {
+    NA  # Return NA if no valid p-values
+  }
+}), .SDcols = pval_cols]
+
+# Calculate FDR
+merged_assoc[, fdr := p.adjust(combined_p, method = "BH")]
+
+# Select relevant columns and sort by chromosome and position
+final_result <- merged_assoc[order(chr, ps), .(chr, ps, combined_p, fdr)]
+
+# Add informative column names to track number of tests combined
+n_tests <- merged_assoc[, apply(.SD, 1, function(x) sum(!is.na(x))), .SDcols = pval_cols]
+final_result[, n_tests := n_tests]
+
+
+
+output_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/each_te_log2_difference/output/"
+# Save the result to a file with timestamp
+
+output_file <- file.path(output_dir, paste0("combined_TE_pvalues_with_FDR_repl2", format(Sys.time(), "%Y%m%d"), ".txt"))
+
+# Write the file
+fwrite(final_result, output_file)
+# Print summary of significant results at different thresholds
+cat("Number of significant results:\n")
+cat("FDR < 0.05:", sum(final_result$fdr < 0.05, na.rm = TRUE), "\n")
+cat("FDR < 0.01:", sum(final_result$fdr < 0.01, na.rm = TRUE), "\n")
+```
+
+```{r}
+final_result$rs <- '.'
+manhattan(final_result, chr = "chr", bp = "ps", snp = "rs", p = "fdr", 
+          col = c("#89B9AD", "#85586F"), 
+          main = "Manhattan Plot of GEMMA Result", 
+          ylim = c(0, 1000),cex.axis = 1.5,suggestiveline = FALSE, genomewideline = FALSE)
+#Q-Q plot
+par(mar = c(5, 5, 2, 2))  # Adjust margins to give more space
+#qq(final_result$combined_p, 
+#   cex.axis = 2, 
+#  cex.lab = 2,
+#   main = "Q-Q Plot of GEMMA Result")
+
+
+```
+```{r}
+significant_snps <- final_result[-log10(final_result$fdr) > 100, ]
+
+
+```
+
+```{r}
+####FIND variants near genes###
+
+max_upstream_distance <- 500  # Adjust as necessary
+max_downstream_distance <- 500  # Adjust as necessary
+snps_near_genes <- vector("list", length = nrow(significant_snps))
+# Loop through each SNP to find if it's inside, upstream, or downstream of any gene
+for (i in 1:nrow(significant_snps)) {
+  snp <- significant_snps[i, ]
+  genes_on_chr <- mapped_genes[mapped_genes$chromosome_name == snp$chr, ]
+  is_near_or_inside_gene <- (genes_on_chr$start_position - max_upstream_distance <= snp$ps & snp$ps <= genes_on_chr$end_position + max_downstream_distance) |
+    (genes_on_chr$start_position <= snp$ps & snp$ps <= genes_on_chr$end_position)
+  
+  if (any(is_near_or_inside_gene)) {
+    temp_df <- genes_on_chr[is_near_or_inside_gene, ]
+    temp_df$snp_position <- snp$ps
+    temp_df$chromosome <- snp$chr 
+    temp_df$pval <- snp$p_wald 
+    snps_near_genes[[i]] <- temp_df
+  } else {
+    snps_near_genes[[i]] <- NULL
+  }
+}
+
+snps_near_genes_df <- do.call(rbind, lapply(snps_near_genes, function(df) {
+  if (is.null(df)) return(NULL)
+  df
+}))
+```
+```{r}
+#write.table(snps_near_genes_df, "/groups/nordborg/projects/ddm1_resilencing/03_processing/008_gwas/expression_difference_selected_tes/output/result_500upstream_500downstream_5^10-5.csv", quote = F, row.names = F, sep="\t")
+snps_near_genes_df2 <- snps_near_genes_df %>% 
+  select(snp_position, chromosome, ensembl_gene_id, pval) %>%
+  mutate(pval = -log10(pval))
+
+# Format p-values with commas for display purposes
+snps_near_genes_df2$pval <- format(snps_near_genes_df2$pval, big.mark = ".", decimal.mark = ",", scientific = FALSE)
+
+# View the result
+print(snps_near_genes_df2)
+```
+
+

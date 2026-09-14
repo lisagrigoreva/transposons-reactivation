@@ -1,0 +1,131 @@
+---
+title: "calculate_number_of_snps_50bp"
+output: html_document
+date: "2025-11-26"
+---
+
+```{r setup, include=FALSE}
+library(GenomicRanges)
+library(VariantAnnotation)
+library(rtracklayer)
+library(data.table)
+```
+# Read the GFF file
+```{r}
+gff <- import.gff("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/genomes/Araport11_GFF3_only_transposons_TAIR10_GFF3_genes.gff")
+
+# Read the VCF file
+
+vcf <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pannagram/features/snp/snps_1_1_TAIR10_TAIR10.vcf", 
+             select = c(1, 2),
+             col.names = c("chr", "pos"))
+vcf$chr <- gsub("TAIR10_", "", vcf$chr)
+```
+
+# Create 50bp windows at the start of each gene/TE based on strand
+# For + strand: start position to start + 49
+# For - strand: end position - 49 to end position
+```{r}
+snps <- GRanges(
+  seqnames = vcf$chr,
+  ranges = IRanges(start = vcf$pos, end = vcf$pos)
+)
+
+# Create 50bp windows at the start of each gene/TE based on strand
+gff_50bp <- gff
+
+# For + strand: start position to start + 49
+start(gff_50bp[strand(gff_50bp) == "+"]) <- start(gff[strand(gff) == "+"])
+end(gff_50bp[strand(gff_50bp) == "+"]) <- start(gff[strand(gff) == "+"]) + 49
+
+# For - strand: end position - 49 to end position
+start(gff_50bp[strand(gff_50bp) == "-"]) <- end(gff[strand(gff) == "-"]) - 49
+end(gff_50bp[strand(gff_50bp) == "-"]) <- end(gff[strand(gff) == "-"])
+
+# Count overlaps between SNPs and 50bp windows
+snp_counts <- countOverlaps(gff_50bp, snps)
+
+# Create result table
+result <- data.frame(
+  Chromosome = seqnames(gff),
+  Start = start(gff),
+  End = end(gff),
+  Strand = strand(gff),
+  Gene_ID = gff$ID,
+  Window_Start = start(gff_50bp),
+  Window_End = end(gff_50bp),
+  SNP_count = snp_counts
+)
+
+# View results
+head(result)
+
+## Get the snp count 
+
+```
+
+
+## Pi calculation
+```{r}
+library(GenomicRanges)
+library(rtracklayer)
+
+
+# Create 50bp windows
+gff_50bp <- gff
+start(gff_50bp[strand(gff_50bp) == "+"]) <- start(gff[strand(gff) == "+"])
+end(gff_50bp[strand(gff_50bp) == "+"]) <- start(gff[strand(gff) == "+"]) + 49
+
+start(gff_50bp[strand(gff_50bp) == "-"]) <- end(gff[strand(gff) == "-"]) - 49
+end(gff_50bp[strand(gff_50bp) == "-"]) <- end(gff[strand(gff) == "-"])
+
+# Create BED file (0-based coordinates for BED format)
+bed <- data.frame(
+  chr = as.character(seqnames(gff_50bp)),
+  start = start(gff_50bp) - 1,  # BED is 0-based
+  end = end(gff_50bp),
+  gene_id = mcols(gff)$ID
+)
+
+write.table(bed, "windows_50bp.bed", sep="\t", quote=FALSE, row.names=FALSE, col.names=FALSE)
+```
+
+```{bash}
+vcftools --vcf snps_1_1_TAIR10_TAIR10.vcf \
+  --bed windows_50bp.bed \
+  --site-pi \
+  --out gene_windows_sites
+```
+## Merge 
+```{r}
+library(data.table)
+
+# Read vcftools output
+pi_results <- fread("gene_windows_pi.windowed.pi")
+
+# Read your original windows with gene IDs
+windows <- fread("windows_50bp.bed", col.names = c("chr", "start", "end", "gene_id"))
+
+# Merge (vcftools uses 1-based coordinates in output)
+windows[, start := start + 1]  # Convert back to 1-based
+merged <- merge(windows, pi_results, by.x = c("chr", "start", "end"), 
+                by.y = c("CHROM", "BIN_START", "BIN_END"), all.x = TRUE)
+
+# Add original gene coordinates
+gff_df <- data.frame(
+  gene_id = mcols(gff)$ID,
+  gene_start = start(gff),
+  gene_end = end(gff),
+  strand = as.character(strand(gff))
+)
+
+final_result <- merge(merged, gff_df, by = "gene_id")
+
+fwrite(final_result, "gene_pi_50bp_windows.txt", sep="\t")
+```
+
+
+
+
+
+

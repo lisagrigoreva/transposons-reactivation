@@ -1,0 +1,93 @@
+---
+title: "010_cis_regulation_analysis"
+output: html_document
+date: "2026-05-05"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+```
+# Read gene annotation
+```{r}
+gene_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff") %>% filter(V3=="gene")
+gene_annotation$V9 <- gsub('.*Name=', '', gene_annotation$V9)
+gene_annotation$V9 <- gsub(';.*', '', gene_annotation$V9)
+colnames(gene_annotation) <- c("chrom", "source", "type", "start", "stop", "score","strand", "phase", "id")
+```
+
+```{r}
+gene_annotation <- gene_annotation %>%
+  mutate(
+    chrom_int  = as.integer(gsub("Chr", "", chrom)),
+    cis_start  = pmax(0, start - 5000),
+    cis_end    = stop + 5000) %>%
+  dplyr::select(id, chrom_int, cis_start, cis_end)
+gene_annotation <- na.omit(gene_annotation)
+#  Assemble & keep top SNP per gene 
+gwas_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/ddm1/with_K"
+files    <- list.files(gwas_dir, pattern = "\\.assoc\\.txt$", full.names = TRUE)
+
+library(pbapply)
+library(data.table)
+library(parallel)
+
+n_files    <- length(files)
+progress_f <- tempfile()  # temp file to track progress
+writeLines("0", progress_f)
+
+library(pbmcapply)
+
+top_snps <- rbindlist(pbmclapply(files, function(f) {
+  gene_id <- strsplit(basename(f), "\\.")[[1]][1]
+  coords  <- gene_annotation[gene_annotation$id == gene_id, ]
+  if (nrow(coords) == 0) return(NULL)
+  dt  <- fread(f, select = c("chr", "ps", "p_wald", "beta", "se", "af"), showProgress = FALSE)
+  cis <- dt[chr == coords$chrom_int & ps >= coords$cis_start & ps <= coords$cis_end]
+  if (nrow(cis) == 0) return(NULL)
+  top <- cis[which.min(p_wald)]
+  top[, gene := gene_id]
+  top
+}, mc.cores = 8), fill = TRUE)
+
+# ── 3. Save ───────────────────────────────────────────────────────────────────
+fwrite(top_snps, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/top_cis_eqtl_per_gene_f1ddm1_5karound_the_gene.tsv", sep = "\t")
+message("Done: ", nrow(top_snps), " genes with a top cis SNP")
+```
+
+
+```{r}
+library(ggplot2)
+
+# Add gene position to top_snps
+top_snps_ann <- top_snps %>%
+  left_join(gene_annotation %>% 
+              mutate(gene_mid = (cis_start + cis_end) / 2) %>%
+              dplyr::select(id, chrom_int, gene_mid), 
+            by = c("gene" = "id", "chr" = "chrom_int"))
+
+ggplot(top_snps_ann, aes(x = gene_mid, y = ps, color = -log10(p_wald))) +
+  geom_point(size = 0.8, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  #facet_wrap(~chr, nrow = 1, scales = "free") +
+  scale_color_viridis_c(option = "magma", name = "-log10(p)") +
+  labs(x = "Gene position", y = "Top SNP position", title = "Cis-eQTL diagonal plot") +
+  theme_bw()
+top_snps_ann$pwald_log10 <- -log10(top_snps_ann$p_wald)
+```
+## Results for selected genes on chromosome 5 
+```{r}
+chr5_result <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5.txt")
+
+chr5_result_with_cis_regulation <- left_join(chr5_result, top_snps_ann, by=c("DB identifier"="gene"))
+chr5_result_with_cis_regulation[, pwald_log10 := round(pwald_log10, 3)]
+chr5_result_with_cis_regulation[, p_wald := signif(p_wald, 4)]
+
+fwrite(chr5_result_with_cis_regulation, 
+       "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/chr5_ddm1_cis_eqtl.csv", 
+       sep = ";", dec = ",", na = "NA", quote = TRUE)
+```
+
+
+
+

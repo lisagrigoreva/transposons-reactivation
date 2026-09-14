@@ -1,0 +1,356 @@
+---
+title: "liftov_analysis"
+output: html_document
+date: "2025-11-27"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ComplexHeatmap)
+```
+
+```{r}
+log_cpm_batchCorrected <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/filtered_matrix_morethan5reads_5_per_samples_batch_corrected.csv")
+```
+## Select TE
+```{r}
+tes <- !grepl("AT[1-9]TE", log_cpm_batchCorrected$X)
+log_cpm_batchCorrected_tes <- log_cpm_batchCorrected[tes,]
+
+## Intersect with cdca7te union
+cdca7tes1 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+cdca7tes2 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_2_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+cdca7tes_union <- full_join(cdca7tes1,cdca7tes2)
+cdca7tes_union$Geneid <- gsub("_AS", "",cdca7tes_union$Geneid)
+cdca7tes_union <- cdca7tes_union[!grepl("_AS", cdca7tes_union$Geneid), ]
+```
+## Select CDCA7 TEs 
+```{r}
+selection <- (log_cpm_batchCorrected_tes$X %in% cdca7tes_union$Geneid) 
+log_cpm_batchCorrected_tes_selected <- log_cpm_batchCorrected_tes[selection,]
+```
+
+```{r}
+rownames(log_cpm_batchCorrected_tes_selected) <- log_cpm_batchCorrected_tes_selected$X
+
+log_cpm_batchCorrected_tes_selected$X<-NULL
+Heatmap(
+      log_cpm_batchCorrected_tes_selected,  # Changed from union_results to z_scaled_matrix
+      name = "log2(counts)",  # Removed plate variable
+      cluster_columns = TRUE,
+      cluster_rows = TRUE,
+      clustering_distance_columns = "euclidean",
+      show_column_names = FALSE,
+      show_row_names = FALSE,
+      show_heatmap_legend = TRUE,
+      row_km = 1,
+      row_km_repeats = 1000,
+      column_km_repeats = 1000,
+      column_km = 2,
+      #column_split = TRUE,
+      column_names_gp = gpar(fontsize = 5),
+      row_names_gp = gpar(fontsize = 5),
+      heatmap_legend_param = list(
+        title_gp = gpar(fontsize = 13),
+        labels_gp = gpar(fontsize = 13)))
+```
+## Compare average expression of the TE per genotype to the maternally expressed tes 
+```{r}
+# Reshape dataframe
+expression_df <- log_cpm_batchCorrected_tes
+expression_df$TE <- expression_df$X
+expression_df$X<-NULL
+
+long_data <- expression_df %>%
+  pivot_longer(
+    cols = -TE,
+    names_to = "sample_name",
+    values_to = "expression_value"
+  ) %>%
+  mutate(
+    Genotype = case_when(
+      grepl("^F1_ddm1_", sample_name) ~ "F1_ddm1",
+      grepl("^F1_Col_", sample_name) ~ "F1_Col",
+      grepl("^ct_col_", sample_name) ~ "ct_col",
+      grepl("^ddm1_ct_", sample_name) ~ "ddm1_ct",
+      TRUE ~ NA_character_
+    ),
+    Accession = sub("^[^_]+_[^_]+_([^_]+)_.*", "\\1", sample_name),
+    Replicate = sub("^[^_]+_[^_]+_[^_]+_([^_]+)_.*", "\\1", sample_name),
+    Plate = sub("^[^_]+_[^_]+_[^_]+_[^_]+_([^_]+)_.*", "\\1", sample_name),
+    Sample_ID = sub(".*_([^_]+)$", "\\1", sample_name)
+  )
+
+# Check results
+head(long_data)
+
+```
+## Transform data
+```{r}
+filtered_data <- maternally_expressed_tes_tes %>%
+  filter(Genotype %in% c("F1_ddm1", "F1_Col"))
+filtered_data$acc_variant <- paste(filtered_data$Accession, filtered_data$Genotype, sep="_")
+
+filtered_data2 <- filtered_data[filtered_data$genome=="tair10",]
+filtered_data <- filtered_data2
+# INT function
+inverse_normal <- function(x) {
+  qnorm((rank(x, na.last="keep") - 0.5) / sum(!is.na(x)))
+}
+
+# Apply INT within each Genotype group
+filtered_data <- filtered_data %>%
+  group_by(Genotype) %>%
+  mutate(expression_INT = inverse_normal(log2_CPM)) %>%
+  ungroup()
+
+# Check the result
+head(filtered_data)
+```
+## Connect to the sampleinfo
+```{r}
+sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_phenotype_preprocessed_based_on_pca_with_selfers_v2.csv",header=T)
+
+filtered_data$sample_id <- as.numeric(filtered_data$sample_id)
+sampledata$Sample_id <- as.numeric(sampledata$Sample_id)
+filtered_data_with_info <- inner_join(filtered_data,sampledata,by=c("sample_id"="Sample_id", "Genotype"="Genotype", "Variant"="Variant", "Accession"="Accession"))
+```
+##Get BLUPs
+```{r}
+library(lme4)
+library(dplyr)
+
+
+## Calculate BLUP
+blups <- filtered_data_with_info %>%
+  {
+    model <- lmer(log2_CPM ~ (1|acc_variant) + (1|Replicate), data = .)
+    varcomp <- as.data.frame(VarCorr(model))
+    var_acc <- varcomp$vcov[varcomp$grp == "acc_variant"]
+    var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+    var_resid <- varcomp$vcov[varcomp$grp == "Residual"]
+    h2 <- var_acc / (var_acc + var_replicate + var_resid)
+    
+    tibble(
+      Accession = rownames(ranef(model)$acc_variant),
+      BLUP = ranef(model)$acc_variant[,1],
+      #Residuals = resid(model),
+      h2 = h2
+    )
+  }
+
+
+blups$Genotype <- gsub("^.*?_(F.*)", "\\1", blups$Accession)
+blups$Accession <- gsub("_.*", "", blups$Accession)
+blups_fin <- pivot_wider(blups, id_cols=Accession, names_from=Genotype, values_from=BLUP)
+
+
+
+## Fit the model
+filtered_data_col <- filtered_data_with_info[filtered_data_with_info$Genotype=="F1_ddm1",]
+model <- lmer(log2_CPM ~ (1|acc_variant) + (1|Replicate), data = filtered_data_col)
+## Get residuals 
+residuals <- resid(model)
+## Regression diagnostics
+fitted_values <- fitted(model)
+plot(fitted_values,residuals)
+hist(residuals)
+#qqplot of residuals
+qqnorm(residuals)
+qqline(residuals)
+
+## Group level influence
+library(influence.ME)
+
+# Calculate influence for the acc_variant random effect
+random_effect_influence <- influence(model, group="acc_variant")
+
+# Plot Cook's distance
+plot(random_effect_influence, which="cook", cex.axis=0.3)
+
+## Fitted VS residuals
+ggplot(blups, aes(Fitted, Residual))+geom_point()+facet_wrap(~Genotype)
+```
+
+## Correlate with mean 
+```{r}
+filtered_data_mean <- filtered_data_with_info %>% group_by(Accession, Genotype) %>% dplyr::summarise(mean_expr=mean(log2_CPM), .groups = "keep")
+filtered_data_mean_wide <- pivot_wider(filtered_data_mean, id_cols=Accession, names_from=Genotype,values_from=mean_expr)
+# Merge with blups
+blups_fin$Accession <- as.numeric(blups_fin$Accession)
+diagnostic <- inner_join(filtered_data_mean_wide,blups_fin, by="Accession", suffix=c("_mean", "_blups"))
+ggplot(diagnostic, aes(F1_Col_mean,F1_Col_blups))+geom_point()
+ggplot(diagnostic, aes(F1_ddm1_mean,F1_ddm1_blups))+geom_point()
+```
+
+```{r}
+blups_fin$Accession <- as.numeric(blups_fin$Accession)
+## Remove accessions from Tom's list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_fin[!blups_fin$Accession %in% accessions_not_distingquished$V1, ]
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+## Form final df 
+long_df_final$F1_ddm1_norm <- long_df_final$F1_ddm1-long_df_final$F1_Col
+long_df_final <- long_df_final %>% dplyr::select(null1,Accession,null2,null3,null4,F1_Col,F1_ddm1,F1_ddm1_norm)
+long_df_final[is.na(long_df_final)] <- -9
+write.table(long_df_final,"/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/68accessions_maternallyexpressed_tes/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.fam", row.names = F, quote = F, sep="\t", col.names = F)
+```
+
+
+## Create phenotype 
+```{r}
+
+long_data$acc_var <- paste(long_data$Accession,long_data$Genotype, sep="_")
+heritability <- long_data %>%
+  filter(Genotype %in% c("F1_ddm1", "F1_Col")) %>%
+  group_by(TE, Genotype) %>% # Group by both TE and genotype
+  group_map(~ {
+    df <- .x
+    te_id <- .y$TE
+    geno_id <- .y$Genotype
+    model <- lmer(expression_value ~ (1|acc_var) + (1|Replicate), data = df)
+    varcomp <- as.data.frame(VarCorr(model))
+    var_acc <- varcomp$vcov[varcomp$grp == "acc_var"]
+    var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+    var_resid <- varcomp$vcov[varcomp$grp == "Residual"]
+    h2 <- var_acc / (var_acc + var_replicate + var_resid)
+    resids <- residuals(model)
+    tibble(
+      TE = te_id,
+      genotype = geno_id,
+      heritability = h2,
+      var_acc = var_acc,
+      var_replicate = var_replicate,
+      var_resid = var_resid,
+      residuals = resids
+    )
+  }) %>%
+  bind_rows()
+```
+
+
+```{r}
+family_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+long_data_step5_filtered_with_annotation <- inner_join(long_data,family_annotation, by=c("TE"="Transposon_Name"))
+
+heritability_with_family <- inner_join(family_annotation,heritability, by=c("Transposon_Name"="TE"))
+  
+ggplot(heritability_with_family, aes(x = heritability, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Heritability per TE", x = "Heritability", y = "Count") + 
+  facet_wrap(~Transposon_Super_Family)
+
+## Residuals distribution 
+ggplot(heritability, aes(x = residuals, fill = genotype)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_fill_manual(values = c("#FFB823", "darkblue")) +
+  theme_minimal(base_size = 15) +
+  labs(title = "Residuals from heritability", x = "Heritability", y = "Count") + 
+  facet_wrap(~genotype)
+```
+
+## Check correlation of BLUPs and mean 
+```{r}
+filtered_data_mean <- filtered_data %>% group_by(Genotype,Accession, TE )
+```
+
+## Read maternally expressed TEs df 
+```{r}
+reshaped_data_with_sampleinfo_filtered <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification_rsem/reshaped_allele_specific_expr_filtered_min10readsin5persamples.csv")
+
+tes <- !grepl("AT[1-9]TE", reshaped_data_with_sampleinfo_filtered$ID)
+maternally_expressed_tes_tes <- reshaped_data_with_sampleinfo_filtered[tes,]
+```
+
+
+## Merge with maternally expressed 
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# 1. Prepare allele-specific data (sum both alleles per sample)
+allele_summed <- maternally_expressed_tes_tes %>%
+  group_by(sample_id, ID, Genotype, Variant, Accession) %>%
+  summarise(
+    total_log2_CPM = log2(sum(CPM) + 1),  # Sum CPMs then log transform
+    .groups = "drop",
+  )
+
+# 2. Prepare non-allele-specific data
+non_allele <- long_data %>%
+  mutate(
+    ID = TE,
+    total_log2_CPM_bulk = expression_value
+  ) %>%
+  dplyr::select(Sample_ID, ID, total_log2_CPM_bulk, Genotype, Accession)
+
+# 3. Merge datasets
+# Convert Accession to the same type in both dataframes
+non_allele$Accession <- as.numeric(non_allele$Accession)
+allele_summed$Accession <- as.numeric(allele_summed$Accession)
+non_allele$Sample_ID <- as.numeric(non_allele$Sample_ID)
+# Now the join should work
+comparison_data <- allele_summed %>%
+  inner_join(
+    non_allele,
+    by = c("sample_id" = "Sample_ID", "ID", "Genotype", "Accession"),
+    relationship = "many-to-many"
+  )
+
+# 4. Calculate correlation
+cor_result <- cor.test(
+  comparison_data$total_log2_CPM,
+  comparison_data$total_log2_CPM_bulk,
+  method = "pearson"
+)
+
+print(paste("Pearson correlation:", round(cor_result$estimate, 3)))
+print(paste("P-value:", cor_result$p.value))
+
+# 5. Scatterplot: Overall comparison
+ggplot(comparison_data, aes(x = total_log2_CPM, y = total_log2_CPM_bulk)) +
+  geom_point(alpha = 0.3, size = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Allele-Specific vs. Bulk Expression",
+    x = "log2(CPM+1) - Allele-Specific (Summed)",
+    y = "log2(CPM+1) - Bulk (Non-Allele-Specific)",
+    subtitle = paste0("Pearson r = ", round(cor_result$estimate, 3), 
+                     ", p < ", format.pval(cor_result$p.value, digits = 2))
+  ) +
+  theme_bw() +
+  coord_fixed()+facet_wrap(~Genotype)
+
+
+# Calculate per-genotype correlations
+genotype_cors <- comparison_data %>%
+  group_by(Genotype) %>%
+  summarise(
+    correlation = cor(total_log2_CPM, total_log2_CPM_bulk, use = "complete.obs"),
+    n_observations = n(),
+    .groups = "drop"
+  )
+```
+## How many TEs are in intersection with Pierres data?
+```{r}
+cdca7tes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+
+
+
+summary(cdca7tes$Geneid %in% maternally_expressed_tes_tes$ID)
+```
+
+
+
+
+
+
+
+

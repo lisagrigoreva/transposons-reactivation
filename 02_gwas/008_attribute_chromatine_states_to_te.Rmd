@@ -1,0 +1,90 @@
+---
+title: "010_find_tes_that_overalp_chromatine_states"
+output: html_document
+date: "2025-03-24"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+## Read TEs df
+```{r}
+transposons <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+#transposons$V1 <- gsub("Chr","",transposons$V1)
+#transposons$V9 <- gsub("transcript_id .*; gene_id", "", transposons$V9)
+#transposons$V9 <- gsub("\"", "", transposons$V9)
+#transposons$V9 <- gsub(";", "", transposons$V9)
+chromatine_states <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/histone_stages/AT_26_segments.bed")
+# Extract chromosome name from transposons
+transposons$chrom <- gsub("TE.*", "", transposons$Transposon_Name)
+transposons$chrom <- gsub("AT", "", transposons$chrom)
+transposons$chrom <- as.numeric(transposons$chrom)
+```
+## Get overlap between chromatine state and transposon
+```{r}
+# Calculate intersection
+library(GenomicRanges)
+
+# Create  TE ranges
+tes_gr <- GRanges(
+  seqnames = transposons$chrom,
+  ranges = IRanges(start = transposons$Transposon_min_Start, end = transposons$Transposon_max_End)
+  , gene_id=transposons$Transposon_Name
+)
+
+states_gr <- GRanges(
+  seqnames = chromatine_states$chrom,
+  ranges = IRanges(start = chromatine_states$start, end = chromatine_states$end),
+  state = chromatine_states$state
+)
+
+overlaps <- findOverlaps(tes_gr, states_gr)
+
+overlap_widths <- width(pintersect(tes_gr[queryHits(overlaps)], states_gr[subjectHits(overlaps)]))
+
+
+overlap_df <- data.frame(
+  gene_id = tes_gr$gene_id[queryHits(overlaps)],
+  te_start = start(tes_gr)[queryHits(overlaps)],
+  te_end = end(tes_gr)[queryHits(overlaps)],
+  te_width = width(tes_gr)[queryHits(overlaps)],
+  state = states_gr$state[subjectHits(overlaps)],
+  overlap_width = overlap_widths,
+  overlap_percent = 100 * overlap_widths / width(tes_gr)[queryHits(overlaps)])
+
+
+```
+## TEs that overlap genes at least 1bp 
+```{r}
+# Group by gene_id and state, sum the overlap percentages
+state_summary <- overlap_df %>%
+  group_by(gene_id, state) %>%
+  summarize(total_overlap_percent = sum(overlap_percent),
+            total_overlap_width = sum(overlap_width),
+            .groups = "drop")
+
+# Find the dominant state for each TE
+dominant_states <- state_summary %>%
+  group_by(gene_id) %>%
+  slice_max(order_by = total_overlap_percent, n = 1) %>%
+  dplyr::select(gene_id, dominant_state = state, coverage_percent = total_overlap_percent)
+
+# View the results
+dominant_states <- dominant_states[dominant_states$dominant_state=="E4" | dominant_states$dominant_state=="E1" | dominant_states$dominant_state=="E10" |
+                                   dominant_states$dominant_state=="E2" | dominant_states$dominant_state=="E3" | dominant_states$dominant_state=="E5" |
+                                     dominant_states$dominant_state=="E6" | dominant_states$dominant_state=="E7" | dominant_states$dominant_state=="E8" |
+                                     dominant_states$dominant_state=="E9" ,]
+write.csv(dominant_states,"/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/histone_stages/chromatine_stages_tair10tes_euchromatin.csv", quote = F, row.names = F)
+```
+
+```{r}
+
+ggplot(dominant_states, aes(dominant_state,coverage_percent))+geom_point()
+```
+
+
+
+
+
+
+

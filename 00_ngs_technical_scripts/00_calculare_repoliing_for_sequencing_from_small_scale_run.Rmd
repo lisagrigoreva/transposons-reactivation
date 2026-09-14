@@ -1,0 +1,82 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+ 
+
+```{r}
+number_of_reads <- read.csv("/groups/nordborg/projects/ddm1_resilencing/01_data/tm3_small_scale_seq_set1_1_repl_gwas_trail/BTR67725-2122_0_R16179_20231216/demultiplexed/BTR67725-2122_0_ALL_10u0x10x0N0_demux_stats.tab", header=T, sep="\t")
+number_of_reads$start_concentration <- "1"
+number_of_reads$max_concentration <- "15"
+number_of_reads$min_concetration <- "1"
+number_of_reads$median <- median(number_of_reads$count)
+number_of_reads$normilized_to_median_concentration <- (number_of_reads$count/number_of_reads$median)
+number_of_reads <- number_of_reads[number_of_reads$id!="lane",]
+number_of_reads <- number_of_reads[number_of_reads$id!="ALL_10u0x10x0N0",]
+number_of_reads <- number_of_reads[number_of_reads$type=="sample",]
+
+number_of_reads_wo_0 <- number_of_reads[number_of_reads$count>0,]
+number_of_reads$normilized_to_max_concentration <- (max(number_of_reads_wo_0$count))/(number_of_reads$count)
+
+number_of_reads$normilized_to_min_number_of_reads_concentration <- min(number_of_reads_wo_0$count)/(number_of_reads$count)
+number_of_reads_f <- number_of_reads[ number_of_reads$normilized_to_median_concentration>1 & number_of_reads$normilized_to_median_concentration<15  ,]
+
+```
+# Adjust volume
+```{r}
+number_of_reads <- read.csv("/groups/nordborg/projects/ddm1_resilencing/01_data/tm3_small_scale_seq_set_1_4_repl_gwas_trail//BTR67725-2122_0_R16179_20231216/demultiplexed/BTR67725-2122_0_ALL_10u0x10x0N0_demux_stats.tab", header=T, sep="\t")
+number_of_reads <- number_of_reads[number_of_reads$id!="lane",]
+number_of_reads <- number_of_reads[number_of_reads$id!="ALL_10u0x10x0N0",]
+number_of_reads <- number_of_reads[number_of_reads$type=="sample",]
+number_of_reads <- number_of_reads %>%dplyr::select(id,name, type,count, multi_id,request_id)
+# Calculate total reads
+total_reads <- sum(number_of_reads$count)
+
+# Calculate read proportions
+number_of_reads$ReadProportion <- number_of_reads$count / total_reads
+
+# Set the desired total volume for the pool (upper limit)
+total_volume_upper_limit <- 15  # in microliters, adjust as needed
+
+# Calculate initial volume for each sample based on read proportions
+number_of_reads$InitialVolume <- number_of_reads$ReadProportion * total_volume_upper_limit
+# Apply minimum and maximum volume constraints
+number_of_reads$AdjustedVolume <- pmax(pmin(number_of_reads$InitialVolume, 15), 1)
+
+
+# Normalize volumes if the sum exceeds the total volume
+total_volume <- sum(number_of_reads$AdjustedVolume)  # recalculating total volume after adjustments
+normalization_factor <- min(total_volume_upper_limit / total_volume, 1)
+number_of_reads$FinalVolume <- number_of_reads$AdjustedVolume * normalization_factor
+
+```
+
+
+```{r}
+# Assign minimum volume to each sample
+# Calculate total reads
+
+number_of_reads <- read.csv("/groups/nordborg/projects/ddm1_resilencing/01_data/tm3_small_scale_seq_set1_1_repl_gwas_trail/BTR67725-2122_0_R16179_20231216/demultiplexed/BTR67725-2122_0_ALL_10u0x10x0N0_demux_stats.tab", header=T, sep="\t")
+number_of_reads <- number_of_reads[number_of_reads$id!="lane",]
+number_of_reads <- number_of_reads[number_of_reads$id!="ALL_10u0x10x0N0",]
+number_of_reads <- number_of_reads[number_of_reads$type=="sample",]
+number_of_reads <- number_of_reads %>%dplyr::select(id,name, type,count, multi_id,request_id)
+
+
+max_reads <- max(number_of_reads$count)
+number_of_reads$proportion <- number_of_reads$count / max_reads
+
+target_reads <- max_reads
+number_of_reads$required_volume <- target_reads / (number_of_reads$count / 1) # 1 microliter is the base volume
+number_of_reads$required_volume <- pmin(number_of_reads$required_volume, 15)
+number_of_reads$required_volume <- pmax(number_of_reads$required_volume, 1)
+
+number_of_reads <- number_of_reads %>% select(id,required_volume)
+write.table(number_of_reads,"/groups/nordborg/projects/ddm1_resilencing/01_data/tm3_small_scale_seq_set1_1_repl_gwas_trail/dilution_table_req_R16179_GWAS_1st_trail.csv", quote = F, row.names = F, sep="\t")
+```
+
+
+
+
+
+

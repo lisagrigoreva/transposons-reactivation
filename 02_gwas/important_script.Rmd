@@ -1,0 +1,1182 @@
+---
+title: "gwas_results"
+format: html
+editor: visual
+---
+
+```{r}
+install.packages("https://cran.r-project.org/src/contrib/Archive/manhattanly/manhattanly_0.3.0.tar.gz",
+                 repos = NULL, type = "source")
+library("htmlwidgets")
+library("optparse")
+library(manhattanly)
+library(htmlwidgets)
+```
+
+# GWAS results, averaged expression ( averaged BLUPs)
+
+In this report you can find all GWAS results obtained for averaged TE expression (BLUPs) based on the different subsets (all TEs, restricted to the specific pathway/cluster/family, etc).
+
+Before averaging BLUPs were performed data transformed by: z scale (expression-mean(expression)/sd(expression) and log2 transformation
+
+```{r}
+library(data.table)
+library(qqman)
+# Read SNPs of interest 
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+gene_coordinates <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tair10_baseline_genes_with_coordinates.csv")
+gene_coordinates$V1 <- as.numeric(gene_coordinates$V1)
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas <- function(file_path, N = 230, ylim_max = 10, maf_threshold = 0.05,
+                            snp_table = NULL) {
+  gemma_res <- fread(file_path, header = TRUE)
+  gemma_res$r_squared <- 2 * gemma_res$af * (1 - gemma_res$af) * gemma_res$beta^2
+  gemma_res$pve <- (2 * gemma_res$beta^2 * gemma_res$af * (1 - gemma_res$af)) / 
+                   (2 * gemma_res$beta^2 * gemma_res$af * (1 - gemma_res$af) + 
+                gemma_res$se^2 * 2 * N * gemma_res$af * (1 - gemma_res$af))
+  # Create unique SNP ID 
+  gemma_res$rs <- paste0("rs", gemma_res$ps, "_", gemma_res$chr)
+  bonferroni_threshold <- maf_threshold / nrow(gemma_res)
+  # Get SNPs to highlight 
+  snps_to_highlight <- NULL
+  if (!is.null(snp_table)) {
+    hits <- do.call(rbind, lapply(1:nrow(snp_table), function(i) {
+      gemma_res[gemma_res$chr == as.integer(snp_table$chrom[i]) &   # match types!
+                gemma_res$ps > snp_table$start[i] & 
+                gemma_res$ps < snp_table$stop[i], ]
+    }))
+    snps_to_highlight <- hits$rs
+  }
+  par(mar = c(5, 5, 2, 2))
+  qq(gemma_res$p_wald, cex.axis = 2, cex.lab = 2) # qqplot
+  # Manhattan plot
+  par(mar = c(5, 5, 4, 2))
+  manhattan(gemma_res, 
+            chr = "chr", bp = "ps", snp = "rs", p = "p_wald",
+            col = c("#1A1A1A", "#838B8B"), 
+            genomewideline = FALSE, suggestiveline = FALSE,
+            highlight = snps_to_highlight,
+            ylim = c(0, ylim_max), 
+            cex.axis = 2, cex.lab = 1.8,
+            xlab = "Chromosome", 
+            ylab = expression(-log[10](P)))
+  abline(h = 7.5, col = "red", lty = 2)
+  abline(h = -log10(bonferroni_threshold), col = "black", lty = 2)
+  
+  invisible(gemma_res)
+}
+```
+
+```{r}
+  library(data.table)
+  library(ggplot2)
+## Function to do an enrichment plot 
+enrichment_plot <- function(gwas_data, 
+                            gene_coordinates, 
+                            significant_genes,
+                            enrichment_window = 15000,
+                            maf_filter = 0.05,
+                            min_apriori_count = 5,
+                            enrich_color = "#210F37",
+                            fdr_color = "#F2613F",
+                            title = "Enrichment Plot"){
+
+  # Filter MAF
+  # Read file if input is a path
+  if(is.character(gwas_data) && file.exists(gwas_data)){
+    cat("Reading file...\n")
+    gwas_data <- read.delim(gwas_data, sep = "\t")
+  }
+  gwas_dt <- as.data.table(gwas_data)[af > maf_filter]
+  gene_dt  <- as.data.table(gene_coordinates)
+  # Compute windows
+  gene_dt[, start_window := V4 - enrichment_window]
+  gene_dt[, end_window   := V5 + enrichment_window]
+  # Assign each gene its max -log10(p_wald) within window
+  setkey(gwas_dt, chr, ps)
+  gene_pvals <- gwas_dt[gene_dt,
+                        .(gene_id  = i.V10,
+                          min_pval = max(-log10(p_wald), na.rm = TRUE)),
+                        by = .EACHI,
+                        on = .(chr = V1,
+                               ps >= start_window,
+                               ps <= end_window)]
+  
+  # Clean up
+  gene_pvals[is.infinite(min_pval), min_pval := NA]
+  gene_pvals <- gene_pvals[!is.na(min_pval)]
+  # Label apriori vs background
+  gene_pvals[, apriori := gene_id %in% significant_genes$tair_id]
+  n_apriori    <- sum(gene_pvals$apriori == TRUE)
+  n_background <- sum(gene_pvals$apriori == FALSE)
+  # assign thereshold
+  thresholds <- seq(0, max(gene_pvals$min_pval, na.rm = TRUE), by = 0.1)
+  results <- data.frame(threshold = thresholds, xp = NA, yp = NA)
+  # Compute ratios
+  for(p in thresholds){
+    results$xp[results$threshold == p] <- sum(gene_pvals$min_pval[gene_pvals$apriori == TRUE]  >= p) / n_apriori
+    results$yp[results$threshold == p] <- sum(gene_pvals$min_pval[gene_pvals$apriori == FALSE] >= p) / n_background
+  }
+  
+  results$enrichment <- results$xp / results$yp
+  results$FDR        <- results$yp / results$xp
+  # numerical instability
+  #results$enrichment[results$xp * n_apriori < min_apriori_count] <- NA
+  #results$FDR[results$xp * n_apriori < min_apriori_count] <- NA
+  #results$FDR[is.infinite(results$FDR)] <- NA
+  #results <- na.omit(results)
+  scale_factor <- max(results$enrichment)
+  # Plot
+  p_enrich <- ggplot(results, aes(x = threshold)) +
+    geom_line(aes(y = enrichment), color = enrich_color, size = 1) +
+    geom_point(aes(y = enrichment), color = enrich_color, size = 2) +
+    geom_line(aes(y = FDR * scale_factor), color = fdr_color, size = 1) +
+    geom_point(aes(y = FDR * scale_factor), color = fdr_color, size = 2) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    scale_y_continuous(
+      name = "Enrichment",
+      sec.axis = sec_axis(~ . / scale_factor, name = "FDR")
+    ) +
+    xlab(expression(-log[10](p-value))) +
+    ggtitle(title) +
+    theme_classic(base_size = 16)
+  print(p_enrich)
+  # Top driving genes
+  #cat("\nTop 10 a priori genes driving association:\n")
+  #print(gene_pvals[apriori == TRUE][order(-min_pval)][1:10])
+  invisible(results)
+}
+```
+
+```{r}
+## Function to make html manhattan plots 
+make_manhattan <- function(input, threshold = 2, title = "Manhattan Plot", 
+                           output_file = "manhattan.html", gene_coords = NULL){
+  
+  if(is.character(input) && file.exists(input)){
+    cat("Reading file...\n")
+    gwas_data <- read.delim(input, sep = "\t")
+  } else {
+    gwas_data <- input
+  }
+  n_snps <- nrow(gwas_data)
+  bonferroni <- -log10(0.05 / n_snps)
+  gwas_filtered <- gwas_data[-log10(gwas_data$p_wald) > threshold, ]
+  if(!is.null(gene_coords)){
+    cat("Annotating genes...\n")
+    gwas_dt2 <- as.data.table(gwas_filtered)
+    gene_dt2 <- as.data.table(gene_coords)
+    # Join SNPs to genes using exact gene boundaries. Show ID only if the gene falls into 
+    annotated <- gene_dt2[gwas_dt2, 
+                          .(chr = i.chr, ps = i.ps, p_wald = i.p_wald, 
+                            af = i.af, tair_id = V10),
+                          on = .(V1 = chr, V4 <= ps, V5 >= ps),
+                          mult = "first"]
+    annotated[is.na(tair_id), tair_id := "."]
+    gwas_filtered <- as.data.frame(annotated)
+  }
+  mh <- manhattanly(
+    gwas_filtered,
+    chr = "chr",
+    bp = "ps",
+    p = "p_wald",
+    snp = "ps",
+    annotation1 = "af",
+    annotation2 = if(!is.null(gene_coords)) "tair_id" else NULL,
+    suggestiveline = FALSE,
+    genomewideline = bonferroni,# Bonferroni line
+    title = title
+    )
+  htmlwidgets::saveWidget(mh, file = output_file)
+  cat(paste("\nSaved to", output_file))
+  mh <- mh %>% plotly::layout(yaxis = list(range = c(2, 10)))
+  return(mh)
+}
+```
+
+## All TEs averaged TE expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K/average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K/average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K/average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "average_ddm1_log2_maf005_withk", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K/average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K/average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K/average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K/average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "average_ddm1_zscale_maf005_withk", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K/average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship
+
+```{r,message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/no_K/average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/no_K/average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/no_K/average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "average_ddm1_log2_maf005_no_k", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/no_K/average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship
+
+```{r,message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/no_K/average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/no_K/average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/no_K/average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "average_ddm1_zscale_maf005_no_k", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/no_K/average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without MAF, with kinship
+
+```{r,message=F, warning=FALS}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K_nomaf/average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes,maf_threshold = 0.02)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K_nomaf/average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes,maf_filter = 0.02)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K_nomaf/average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "average_ddm1_log2_no_maf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/with_K_nomaf/average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without MAF, with kinship
+
+```{r,message=F, warning=FALS}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K_nomaf/average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes,maf_threshold = 0.02)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K_nomaf/average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes,maf_filter = 0.02)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K_nomaf/average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "average_ddm1_zscale_no_maf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/with_K_nomaf/average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### KW test log2
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blup_overall_ddm1_average/log2/average_ddm1_log2_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blup_overall_ddm1_average/log2/average_ddm1_log2_kw.html",gene_coords = genes_and_tes)
+
+
+```
+
+### KW test zscale
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blup_overall_ddm1_average/zscale/average_ddm1_zscale_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blup_overall_ddm1_average/zscale/average_ddm1_zscale_kw.html",gene_coords = genes_and_tes)
+
+plot_gemma_gwas(kw_test,N = 230, snp_table = significant_genes,maf_threshold = 0.02)
+```
+
+## CMT2 TEs, averaged expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K/cmt2_average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K/cmt2_average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K/cmt2_average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "cmt2_average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K/cmt2_average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K/cmt2_average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K/cmt2_average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K/cmt2_average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "cmt2_average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K/cmt2_average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+# Plot with highlights 
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/no_K/cmt2_average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/no_K/cmt2_average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/no_K/cmt2_average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "cmt2_average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/no_K/cmt2_average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/no_K/cmt2_average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/no_K/cmt2_average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/no_K/cmt2_average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "cmt2_average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/no_K/cmt2_average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without MAF, with kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K_nomaf/cmt2_average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes,maf_threshold = 0.02)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K_nomaf/cmt2_average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes,maf_filter = 0.02)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K_nomaf/cmt2_average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "cmt2_average_ddm1_log2_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/with_K_nomaf/cmt2_average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without MAF, with kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K_nomaf/cmt2_average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes,maf_threshold = 0.02)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K_nomaf/cmt2_average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes,maf_filter = 0.02)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K_nomaf/cmt2_average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "cmt2_average_ddm1_zscale_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/with_K_nomaf/cmt2_average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### KW test log2
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cmt2_average/log2/cmt2_average_ddm1_log2_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cmt2_average/log2/cmt2_average_ddm1_log2_kw.html",gene_coords = genes_and_tes)
+```
+
+### KW test zscale
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cmt2_average/zscale/cmt2_average_ddm1_zscale_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cmt2_average/zscale/cmt2_average_ddm1_zscale_kw.html",gene_coords = genes_and_tes)
+```
+
+## CDCA7 TEs, averaged expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K/cdca7_average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K/cdca7_average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K/cdca7_average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "cdca7_average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K/cdca7_average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K/cdca7_average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K/cdca7_average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K/cdca7_average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "cdca7_average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K/cdca7_average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/no_K/cdca7_average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/no_K/cdca7_average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/no_K/cdca7_average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "cdca7_average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/no_K/cdca7_average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/no_K/cdca7_average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/no_K/cdca7_average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/no_K/cdca7_average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "cdca7_average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/no_K/cdca7_average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, with kinship, no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K_nomaf/cdca7_average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K_nomaf/cdca7_average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K_nomaf/cdca7_average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "cdca7_average_ddm1_log2_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/with_K_nomaf/cdca7_average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship, no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K_nomaf/cdca7_average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K_nomaf/cdca7_average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K_nomaf/cdca7_average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "cdca7_average_ddm1_zscale_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/with_K_nomaf/cdca7_average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### KW test log2
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cdca7_average/log2/cdca7_average_ddm1_log2_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cdca7_average/log2/cdca7_average_ddm1_log2_kw.html",gene_coords = genes_and_tes)
+```
+
+### KW test zscale
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cdca7_average/zscale/cdca7_average_ddm1_zscale_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_cdca7_average/zscale/cdca7_average_ddm1_zscale_kw.html",gene_coords = genes_and_tes)
+```
+
+## RdDM TEs, averaged expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K/rddm_average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K/rddm_average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K/rddm_average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "rddm_average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K/rddm_average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### z scale transformed matrix, with kinship maf 0.05
+
+```{r}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K/rddm_average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K/rddm_average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K/rddm_average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "rddm_average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K/rddm_average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/no_K/rddm_average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/no_K/rddm_average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/no_K/rddm_average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "rddm_average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/no_K/rddm_average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/no_K/rddm_average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/no_K/rddm_average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/no_K/rddm_average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "rddm_average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/no_K/rddm_average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without maf, with kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K_nomaf/rddm_average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K_nomaf/rddm_average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K_nomaf/rddm_average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "rddm_average_ddm1_log2_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/with_K_nomaf/rddm_average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without maf, with kinship
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K_nomaf/rddm_average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K_nomaf/rddm_average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K_nomaf/rddm_average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "rddm_average_ddm1_zscale_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/with_K_nomaf/rddm_average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### KW test log2
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_rddm_average/log2/rddm_average_ddm1_log2_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_rddm_average/log2/rddm_average_ddm1_log2_kw.html",gene_coords = genes_and_tes)
+```
+
+### KW test zscale
+
+```{r}
+library(data.table)
+kw_test <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_rddm_average/zscale/rddm_average_ddm1_zscale_kw.tsv")
+# Rename column to match what the function expects
+kw_test$p_wald <- kw_test$p_lrt
+# Optional: add af column if not present (needed for annotation1)
+kw_test$af <- NA
+kw_test$chr <- gsub("Chr", "",kw_test$chr)
+kw_test$chr <- as.numeric(kw_test$chr)
+# Plot
+make_manhattan(kw_test, output_file  = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/kruskal_wallis_gwas/blups_ddm1_rddm_average/zscale/rddm_average_ddm1_zscale_kw.html",gene_coords = genes_and_tes)
+```
+
+## Cluster1 TEs, averaged expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K/cluster1_average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K/cluster1_average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K/cluster1_average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "cluster1_average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K/cluster1_average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K/cluster1_average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K/cluster1_average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K/cluster1_average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "cluster1_average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K/cluster1_average_ddm1_zscale_maf005.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/no_K/cluster1_average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/no_K/cluster1_average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/no_K/cluster1_average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "cluster1_average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/no_K/cluster1_average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/no_K/cluster1_average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/no_K/cluster1_average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/no_K/cluster1_average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "cluster1_average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/no_K/cluster1_average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, with kinship no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K_nomaf/cluster1_average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K_nomaf/cluster1_average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K_nomaf/cluster1_average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "cluster1_average_ddm1_log2_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/with_K_nomaf/cluster1_average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K_nomaf/cluster1_average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K_nomaf/cluster1_average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K_nomaf/cluster1_average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "cluster1_average_ddm1_zscale_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/with_K_nomaf/cluster1_average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Cluster2 TEs, averaged expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K/cluster2_average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K/cluster2_average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K/cluster2_average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "cluster2_average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K/cluster2_average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K/cluster2_average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K/cluster2_average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K/cluster2_average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "cluster2_average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K/cluster2_average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/no_K/cluster2_average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/no_K/cluster2_average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/no_K/cluster2_average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "cluster2_average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/no_K/cluster2_average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/no_K/cluster2_average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/no_K/cluster2_average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/no_K/cluster2_average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "cluster2_average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/no_K/cluster2_average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, with kinship no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K_nomaf/cluster2_average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K_nomaf/cluster2_average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K_nomaf/cluster2_average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "cluster2_average_ddm1_log2_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/with_K_nomaf/cluster2_average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K_nomaf/cluster2_average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K_nomaf/cluster2_average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K_nomaf/cluster2_average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "cluster2_average_ddm1_zscale_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/with_K_nomaf/cluster2_average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Cluster3 TEs, averaged expression
+
+### log2 transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K/cluster3_average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K/cluster3_average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K/cluster3_average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "cluster3_average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K/cluster3_average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K/cluster3_average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K/cluster3_average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K/cluster3_average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "cluster3_average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K/cluster3_average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/no_K/cluster3_average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/no_K/cluster3_average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/no_K/cluster3_average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "cluster3_average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/no_K/cluster3_average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, without kinship maf 0.05
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/no_K/cluster3_average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/no_K/cluster3_average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/no_K/cluster3_average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "cluster3_average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/no_K/cluster3_average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+### log2 transformed matrix, with kinship no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K_nomaf/cluster3_average_ddm1_log2_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K_nomaf/cluster3_average_ddm1_log2_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K_nomaf/cluster3_average_ddm1_log2_womaf.assoc.txt", threshold = 2, title = "cluster3_average_ddm1_log2_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/with_K_nomaf/cluster3_average_ddm1_log2_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+### zscale transformed matrix, with kinship no maf
+
+```{r, message=F, warning=FALSE}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K_nomaf/cluster3_average_ddm1_zscale_womaf.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K_nomaf/cluster3_average_ddm1_zscale_womaf.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K_nomaf/cluster3_average_ddm1_zscale_womaf.assoc.txt", threshold = 2, title = "cluster3_average_ddm1_zscale_womaf", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/with_K_nomaf/cluster3_average_ddm1_zscale_womaf.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Superfamily TEs averaged expression
+
+### log2 transformed data
+
+```{r}
+assoc_folder <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/output/"
+assoc_files <- list.files(assoc_folder, pattern = "\\.ddm1_blups_maf005.assoc\\.txt$", full.names = TRUE)
+# Loop over all files
+invisible(lapply(assoc_files, function(f) {
+  cat("Plotting:", basename(f), "\n")
+  tryCatch({
+    plot_gemma_gwas(f, N = 230, snp_table = snp_table)
+  }, error = function(e) {
+    cat("  Skipping", basename(f), "- Error:", conditionMessage(e), "\n")
+  }, warning = function(w) {
+    cat("  Skipping", basename(f), "- Warning:", conditionMessage(w), "\n")
+  })
+}))
+
+```
+
+### z scaled transformed data
+
+```{r}
+assoc_folder <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/output/"
+assoc_files <- list.files(assoc_folder, pattern = "\\.ddm1_blups_maf005.assoc\\.txt$", full.names = TRUE)
+# Loop over all files
+invisible(lapply(assoc_files, function(f) {
+  cat("Plotting:", basename(f), "\n")
+  tryCatch({
+    plot_gemma_gwas(f, N = 230, snp_table = snp_table)
+  }, error = function(e) {
+    cat("  Skipping", basename(f), "- Error:", conditionMessage(e), "\n")
+  }, warning = function(w) {
+    cat("  Skipping", basename(f), "- Warning:", conditionMessage(w), "\n")
+  })
+}))
+```
+
+## 
+
+```{r}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/output/LINE_L1.ddm1_blups_maf005.assoc.txt",N = 230,snp_table = snp_table)
+```
+
+```{r}
+gemma_res <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/output/LINE_L1.ddm1_blups_maf005.assoc.txt" ,header=T)
+
+genes_tair10_significant <- gemma_res[-log10(gemma_res$p_wald)>2,]
+genes_tair10_significant <-genes_tair10_significant[genes_tair10_significant$chr==3,]
+genes_tair10_significant[order(-log10(genes_tair10_significant$p_wald), decreasing = TRUE), ]
+```
+
+```{r}
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/output/LINE_L1.ddm1_blups_maf005.assoc.txt",N = 230,snp_table = snp_table)
+```
+
+```{r}
+genes_tair10_significant <- gemma_res[-log10(gemma_res$p_wald)>2,]
+genes_tair10_significant <-genes_tair10_significant[genes_tair10_significant$chr==5,]
+genes_tair10_significant[order(-log10(genes_tair10_significant$p_wald), decreasing = TRUE), ]
+```
+
+## Line L1 Superfamily, log2 transformed, with kinship
+
+```{r, warning=FALSE,message=FALSE}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="LINE/L1",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/LINE_L1.average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/LINE_L1.average_ddm1_log2_maf005.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/LINE_L1.average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/LINE_L1.average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "LINE_L1.average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/LINE_L1.average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+
+```
+
+## Line L1 Superfamily, zscale transformed, with kinship
+
+```{r, warning=FALSE,message=FALSE}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="LINE/L1",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/LINE_L1.average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/LINE_L1.average_ddm1_zscale_maf005.assoc.txt", 
+               gene_coordinates, 
+                significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/LINE_L1.average_ddm1_zscale_maf005.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/LINE_L1.average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "LINE_L1.average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/LINE_L1.average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Line L1 Superfamily, log2 transformed, without kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="LINE/L1",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/LINE_L1.average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/LINE_L1.average_ddm1_log2_noK.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/LINE_L1.average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/LINE_L1.average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "LINE_L1.average_ddm1_log2_noK.assoc", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/LINE_L1.average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Line L1 Superfamily, zscale transformed, without kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="LINE/L1",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/LINE_L1.average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/LINE_L1.average_ddm1_zscale_noK.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/LINE_L1.average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/LINE_L1.average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "LINE_L1.average_ddm1_zscale_noK.assoc", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/LINE_L1.average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+## SINE Superfamily, log2 transformed, with kinship
+
+```{r, warning=FALSE,message=FALSE}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="SINE",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/SINE.average_ddm1_log2_maf005.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/SINE.average_ddm1_log2_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/SINE.average_ddm1_log2_maf005.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/SINE.average_ddm1_log2_maf005.assoc.txt", threshold = 2, title = "SINE.average_ddm1_log2_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/with_K/SINE.average_ddm1_log2_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+## SINE Superfamily, zscale transformed, with kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="SINE",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/SINE.average_ddm1_zscale_maf005.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/SINE.average_ddm1_zscale_maf005.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/SINE.average_ddm1_zscale_maf005.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/SINE.average_ddm1_zscale_maf005.assoc.txt", threshold = 2, title = "SINE.average_ddm1_zscale_maf005", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/with_K/SINE.average_ddm1_zscale_maf005.assoc.html", gene_coords = genes_and_tes)
+```
+
+## SINE Superfamily, log2 transformed, without kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="SINE",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/SINE.average_ddm1_log2_noK.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/SINE.average_ddm1_log2_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/SINE.average_ddm1_log2_noK.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/SINE.average_ddm1_log2_noK.assoc.txt", threshold = 2, title = "SINE.average_ddm1_log2_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2/no_K/SINE.average_ddm1_log2_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+## SINE Superfamily, zscale transformed, without kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons[transposons$Transposon_Super_Family=="SINE",] %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/SINE.average_ddm1_zscale_noK.assoc.txt",N = 230, snp_table = significant_genes_with_tes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/SINE.average_ddm1_zscale_noK.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/SINE.average_ddm1_zscale_noK.assoc.txt", 
+                genes_and_tes, 
+                significant_genes_with_tes)
+
+
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/SINE.average_ddm1_zscale_noK.assoc.txt", threshold = 2, title = "SINE.average_ddm1_zscale_noK", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale/no_K/SINE.average_ddm1_zscale_noK.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Number of re-silenced TEs, with kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_withk.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_withk.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_withk.assoc.txt", threshold = 2, title = "number_of_tes_maf005_withk", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_withk.assoc.html", gene_coords = genes_and_tes)
+```
+
+## Number of re-silenced TEs, without kinship
+
+```{r}
+significant_genes <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes_with_coordinates.txt", header=T)
+transposons <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T, sep="\t")
+transposons$chrom <- gsub("TE.*", "",transposons$Transposon_Name )
+transposons$chrom <- gsub("AT", "",transposons$chrom )
+transposons$gene_id <- transposons$Transposon_Name
+transposons_line <- transposons %>% select(gene_id,Transposon_Name, chrom,Transposon_min_Start,Transposon_max_End)
+colnames(transposons_line) <- c("gene_id", "tair_id", "chrom", "start", "stop")
+significant_genes_with_tes <- rbind(significant_genes,transposons_line) 
+
+genes_and_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/genes_and_tes.txt")
+
+plot_gemma_gwas("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_nok.assoc.txt",N = 230, snp_table = significant_genes)
+
+enrichment_plot("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_nok.assoc.txt", 
+                gene_coordinates, 
+                significant_genes)
+# Interactive plot
+make_manhattan("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_nok.assoc.txt", threshold = 2, title = "number_of_tes_maf005_nok", output_file = "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/output/number_of_tes_maf005_nok.assoc.html", gene_coords = genes_and_tes)
+```

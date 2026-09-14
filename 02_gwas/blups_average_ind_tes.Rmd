@@ -1,0 +1,1262 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-03-06"
+---
+
+We run GWAS based on the set of differentially expressed TEs identified on the previous step 1170 sense and 507 anti-sense.
+```{r}
+library(dplyr)
+library(ggplot2)
+# Expression sense and anti sense 
+long_data_sense_anti_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_and_anti_sense_long_data_corrected_sense_anti_sense_primary_distance_filtered.csv")
+# Read metadata 
+sequencing_date <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/ddm1_crosses_metadata_2repl_filtered_num_reads_mapping_rate_filtered_outliers_by_pca.txt", header=T, sep=",") %>% dplyr::select(Sample_id,Sequencing_date)
+## Rename column 
+long_data_sense_anti_sense <- long_data_sense_anti_sense %>%
+  dplyr::rename(expression_value = log2cpm,TE = id)
+```
+The phenotype is highly 0 scewed, therefore we need transformation
+```{r}
+## Distribution of the phenotype
+long_data_sense_anti_sense %>%filter(long_data_sense_anti_sense$genotype=="ddm1") %>%
+  ggplot(aes(x = (expression_value), fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "Log2 expression, anti-sense and sense, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+```
+The phenotype was constructed using following transformations:
+
+log2 transformation
+
+z -scale transformation
+
+BoxCox transformation
+```{r}
+## Transform values
+library(forecast)
+long_data_sense_anti_sense$genotype <- ifelse(long_data_sense_anti_sense$genotype=="ct_col", "Col0", long_data_sense_anti_sense$genotype)
+long_data_combined <- long_data_sense_anti_sense[long_data_sense_anti_sense$genotype=="Col0" | long_data_sense_anti_sense$genotype=="ddm1",] # Select only ddm1
+# Apply transformation
+long_data_combined_transformed <- long_data_combined %>%  
+  group_by(TE, genotype) %>% 
+  mutate(
+    zscale = (expression_value - mean(expression_value)) / sd(expression_value),
+    log2 = expression_value,  # Already log2!
+    #shifted = expression_value - min(expression_value) + 1,
+    #lambda = BoxCox.lambda(shifted, lower = -0.5, upper = 0.5),
+    #boxcox = BoxCox(shifted, lambda[1]),
+    INT = qnorm((rank(expression_value, ties.method = "average") - 0.5) / n())  # rank-based
+  ) %>%
+  ungroup()
+```
+We see how transformation changed the values
+```{r}
+long_data_combined_transformed %>%
+  ggplot(aes(x = zscale, fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "z scaled transformed expression, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+
+long_data_combined_transformed %>%
+  ggplot(aes(x = log2, fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "log2 transformed expression, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+
+long_data_combined_transformed %>%
+  ggplot(aes(x = INT, fill = genotype, color = genotype)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, alpha = 0.7, color = "black") +
+  geom_density(linewidth = 1, fill = NA) +
+  scale_fill_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                    labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  scale_color_manual(values = c("Col" = "#FFB823", "ddm1" = "darkblue"),
+                     labels = c("Col" = "Col0 WT X accession", "ddm1" = "Col0 ddm1 X accession")) +
+  labs(title = "Expression per TE by Genotype", 
+       x = "Rank transformed expression, ddm1", 
+       y = "Density") + 
+  theme_minimal(base_size = 12)
+
+## Add seuqencing date 
+long_data_combined_transformed$sample <- gsub(".*_", "", long_data_combined_transformed$sample_id)
+long_data_combined_transformed$sample <- as.numeric(long_data_combined_transformed$sample)
+long_data_combined_transformed <- left_join(long_data_combined_transformed,sequencing_date,by=c("sample"="Sample_id"))
+```
+Then, BLUPs were calculated for each TE accordingly. Based on the plot (fitted vs residuals) log2 transformed values and z-scale transformed values were taken.
+###BLUPs calculation on zscaled values
+```{r, warning=FALSE,message=FALSE}
+library(lme4)
+library(tidyr)
+library(purrr)
+library(tidyverse)
+
+
+
+blups_zscale <- long_data_combined_transformed %>%filter(genotype == "ddm1")%>%
+  group_by(TE) %>% 
+  nest() %>%
+  mutate(
+    model = map(data, ~ lmer(zscale ~ (1 | accession) + (1 | replicate) + (1 | Sequencing_date/plate), 
+                             data = .x,
+                             control = lmerControl(optimizer = "bobyqa", 
+                                                   optCtrl = list(maxfun = 2e5)))),
+    blups_zscale = map(model, ~ ranef(.)$accession %>%
+                  as.data.frame() %>%
+                  rownames_to_column("accession") %>%
+                  setNames(c("accession", "BLUP"))),
+    fitted_resid = map2(model, data, ~ .y %>%
+                          mutate(
+                            fitted = fitted(.x),
+                            residuals = residuals(.x)
+                          )))
+
+# Extract BLUPs for analysis
+blups_long_zscale <- blups_zscale %>%
+  dplyr::select(TE, blups_zscale) %>%
+  unnest(blups_zscale) %>%
+  dplyr::select(TE, accession, BLUP)
+
+# Extract fitted 
+fitted_resid_long_zscale <- blups_zscale %>%
+  dplyr::select(TE, fitted_resid) %>%
+  unnest(fitted_resid)
+
+fitted_resid_long_zscale %>% 
+  ggplot(aes(fitted, residuals)) + 
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~genotype, scales = "free") +
+  labs(title = "Residuals vs Fitted Values, z scale")
+
+# Histogram of residuals
+ggplot(fitted_resid_long_zscale, aes(x = residuals)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  facet_wrap(~genotype) +
+  labs(title = "Histogram of Residuals, z scale",
+       x = "Residuals",
+       y = "Count")
+
+```
+###BLUPs calculation on log2
+```{r,warning=FALSE,message=FALSE}
+library(tidyr)
+library(purrr)
+library(lme4)
+# Caluclate BLUPs
+blups_log2 <- long_data_combined_transformed %>%  
+  group_by(TE) %>% 
+  nest() %>%
+  mutate(
+    model = map(data, ~ lmer(log2 ~ (1 | accession) + (1 | replicate) + (1 | Sequencing_date/plate), 
+                             data = .x,
+                             control = lmerControl(optimizer = "bobyqa", 
+                                                   optCtrl = list(maxfun = 2e5)))),
+    blups_log2 = map(model, ~ ranef(.)$accession %>%
+                  as.data.frame() %>%
+                  rownames_to_column("accession") %>%
+                  setNames(c("accession", "BLUP"))),
+    fitted_resid = map2(model, data, ~ .y %>%
+                          mutate(
+                            fitted = fitted(.x),
+                            residuals = residuals(.x)
+                          )))
+
+# Extract BLUPs for analysis
+blups_long_log2 <- blups_log2 %>%
+  dplyr::select(TE, blups_log2) %>%
+  unnest(blups_log2) %>%
+  dplyr::select(TE, accession, BLUP)
+
+# Extract fitted 
+fitted_resid_long_log2 <- blups_log2 %>%
+  dplyr::select(TE, fitted_resid) %>%
+  unnest(fitted_resid)
+
+fitted_resid_long_log2 %>% 
+  ggplot(aes(fitted, residuals)) +  # Remove the data argument here
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~genotype, scales = "free") +
+  labs(title = "Residuals vs Fitted Values, log2")
+
+# Histogram of residuals
+ggplot(fitted_resid_long_log2, aes(x = residuals)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  facet_wrap(~genotype) +
+  labs(title = "Histogram of Residuals, log2",
+       x = "Residuals",
+       y = "Count")
+```
+
+###BLUPs calculation on rank transformed values
+```{r}
+# Single model across all TEs
+model_rank <- lmer(INT ~ (1 | accession)  + (1 | replicate) + 
+                     (1 | Sequencing_date/plate),
+                   data = long_data_combined_transformed,
+                   control = lmerControl(optimizer = "bobyqa",
+                                         optCtrl = list(maxfun = 2e5)))
+
+# Extract BLUPs per accession
+blups_rank <- ranef(model_rank)$accession %>%
+  as.data.frame() %>%
+  rownames_to_column("accession") %>%
+  setNames(c("accession", "BLUP"))
+
+# Fitted + residuals
+long_data_combined_transformed$fitted <- fitted(model_rank)
+long_data_combined_transformed$residuals <- residuals(model_rank)
+
+ggplot(long_data_combined_transformed, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.05, size = 0.3) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Residuals vs Fitted (INT model)",
+       x = "Fitted", y = "Residuals") +
+  theme_bw()
+
+
+mean_INT_per_accession <- long_data_combined_transformed %>%
+  group_by(accession) %>%
+  summarise(mean_INT = mean(INT, na.rm = TRUE))
+blups_rank$accession<- as.numeric(blups_rank$accession)
+blups_rank %>%
+  left_join(mean_INT_per_accession, by = "accession") %>%
+  ggplot(aes(x = mean_INT, y = BLUP)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "BLUP vs mean INT per accession",
+       x = "Mean INT", y = "BLUP") +
+  theme_bw()
+
+ggplot(data.frame(residuals = residuals(model_rank)), aes(x = residuals)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "black") +
+  labs(title = "Histogram of Residuals (rank model)",
+       x = "Residuals", y = "Count") +
+  theme_bw()
+```
+
+###All TEs averaged, log2 transformed
+```{r}
+blups_avg_log2 <- blups_long_log2 %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2$accession <- as.numeric(blups_avg_log2$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2[!blups_avg_log2$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+
+
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+###All TEs averaged, zscale transformed
+```{r}
+blups_avg_zscale <- blups_long_zscale %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Make accession numeric 
+blups_avg_zscale$accession <- as.numeric(blups_avg_zscale$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale[!blups_avg_zscale$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+###All TEs single model, rank transformed
+```{r}
+# Make accession numeric 
+blups_rank$accession <- as.numeric(blups_rank$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_rank[!blups_rank$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,BLUP)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/rank_transform/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+###Superfamily average, log2
+```{r}
+te_annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header = T)
+# log2 data with te 
+blups_long_log2_with_te <- left_join(blups_long_log2,te_annotation, by=c("TE"="Transposon_Name"))
+# zscale data with te 
+blups_long_zscale_with_te <- left_join(blups_long_zscale,te_annotation, by=c("TE"="Transposon_Name"))
+```
+
+```{r}
+blups_avg_log2_superfamily <- blups_long_log2_with_te %>% 
+  group_by(accession, Transposon_Super_Family) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+How many TEs per family?
+```{r}
+tes_per_superfamily <- blups_long_log2_with_te %>%
+  group_by(Transposon_Super_Family) %>%
+  summarise(n = n_distinct(TE)) %>%   # replace TE_name with your actual TE ID column
+  dplyr::select(Transposon_Super_Family, n)
+tes_per_superfamily
+
+ggplot(tes_per_superfamily, aes(x = reorder(Transposon_Super_Family, -n), y = n)) +
+  geom_bar(stat = "identity", fill = "#5A0E24") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3.5) +
+  labs(x = "Transposon Super Family", y = "Number of TEs", title = "TEs per Superfamily") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+ylim(0,700)
+```
+
+
+```{r}
+blups_avg_log2_superfamily$accession <- as.numeric(blups_avg_log2_superfamily$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_superfamily[!blups_avg_log2_superfamily$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg,Transposon_Super_Family)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$Transposon_Super_Family)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/log2"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(TE == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,ddm1_avg)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+###Superfamily average, zscale
+```{r}
+blups_avg_zscale_superfamily <- blups_long_zscale_with_te %>% 
+  group_by(accession, Transposon_Super_Family) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+blups_avg_zscale_superfamily$accession <- as.numeric(blups_avg_zscale_superfamily$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_superfamily[!blups_avg_zscale_superfamily$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg,Transposon_Super_Family)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$Transposon_Super_Family)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_superfamily_average/zscale"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(TE == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,ddm1_avg)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+###Family average, log2
+```{r}
+blups_avg_log2_family <- blups_long_log2_with_te %>% 
+  group_by(accession, Transposon_Family) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+blups_avg_log2_family$accession <- as.numeric(blups_avg_log2_family$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_family[!blups_avg_log2_family$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg,Transposon_Family)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$Transposon_Family)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_family_average/log2"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(TE == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,ddm1_avg)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+###Family average, zscale
+```{r}
+blups_avg_zscale_family <- blups_long_zscale_with_te %>% 
+  group_by(accession, Transposon_Family) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+blups_avg_zscale_family$accession <- as.numeric(blups_avg_zscale_family$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_family[!blups_avg_zscale_family$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg,Transposon_Family)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$Transposon_Family)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_family_average/zscale"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(TE == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,ddm1_avg)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+### CMT2 average, log2
+```{r}
+cmt2_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_eriko_targets/cmt2_target_tes.txt", header = F)
+# log2 data with te 
+blups_long_log2_cmt2_tes <- inner_join(blups_long_log2,cmt2_tes, by=c("TE"="V1"))
+```
+
+```{r}
+blups_avg_log2_cmt2 <- blups_long_log2_cmt2_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2_cmt2$accession <- as.numeric(blups_avg_log2_cmt2$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_cmt2[!blups_avg_log2_cmt2$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### CMT2 average, zscale 
+```{r}
+cmt2_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_eriko_targets/cmt2_target_tes.txt", header = F)
+# log2 data with te 
+blups_long_zscale_cmt2_tes <- inner_join(blups_long_zscale,cmt2_tes, by=c("TE"="V1"))
+```
+
+```{r}
+blups_avg_zscale_cmt2 <- blups_long_zscale_cmt2_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_zscale_cmt2$accession <- as.numeric(blups_avg_zscale_cmt2$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_cmt2[!blups_avg_zscale_cmt2$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cmt2_average/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### RdDM average,log2
+```{r}
+rddm_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_eriko_targets/rddm_targets.txt", header = F)
+# log2 data with te 
+blups_long_log2_rddm_tes <- inner_join(blups_long_log2,rddm_tes, by=c("TE"="V1"))
+```
+
+```{r}
+blups_avg_log2_rddm <- blups_long_log2_rddm_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2_rddm$accession <- as.numeric(blups_avg_log2_rddm$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_rddm[!blups_avg_log2_rddm$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### RdDM average,zscale
+```{r}
+rddm_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_eriko_targets/rddm_targets.txt", header = F)
+# log2 data with te 
+blups_long_zscale_rddm_tes <- inner_join(blups_long_zscale,rddm_tes, by=c("TE"="V1"))
+```
+
+```{r}
+blups_avg_zscale_rddm <- blups_long_zscale_rddm_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_zscale_rddm$accession <- as.numeric(blups_avg_zscale_rddm$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_rddm[!blups_avg_zscale_rddm$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_rddm_average/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### CDCA7 average,log2
+```{r}
+cdca7_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv", header = T) %>% dplyr::select(Geneid)
+cdca7_tes2 <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_2_vs_Col_0_up_TEs_VST.tsv", header = T) %>% dplyr::select(Geneid)
+cdca7_tes_union <- rbind(cdca7_tes,cdca7_tes2)
+cdca7_tes_union$Geneid <- gsub("_AS", "", cdca7_tes_union$Geneid)
+cdca7_tes_union <- cdca7_tes_union %>% distinct(Geneid, .keep_all = TRUE)
+# log2 data with te 
+blups_long_log2_cdca7_tes <- inner_join(blups_long_log2,cdca7_tes_union, by=c("TE"="Geneid"))
+```
+
+```{r}
+blups_avg_log2_cdca7 <- blups_long_log2_cdca7_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2_cdca7$accession <- as.numeric(blups_avg_log2_cdca7$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_cdca7[!blups_avg_log2_cdca7$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### CDCA7 average,zscale
+```{r}
+cdca7_tes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv", header = T) %>% dplyr::select(Geneid)
+cdca7_tes2 <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_2_vs_Col_0_up_TEs_VST.tsv", header = T) %>% dplyr::select(Geneid)
+cdca7_tes_union <- rbind(cdca7_tes,cdca7_tes2)
+cdca7_tes_union$Geneid <- gsub("_AS", "", cdca7_tes_union$Geneid)
+cdca7_tes_union <- cdca7_tes_union %>% distinct(Geneid, .keep_all = TRUE)
+# log2 data with te 
+blups_long_zscale_cdca7_tes <- inner_join(blups_long_zscale,cdca7_tes_union, by=c("TE"="Geneid"))
+```
+
+```{r}
+blups_avg_zscale_cdca7 <- blups_long_zscale_cdca7_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_zscale_cdca7$accession <- as.numeric(blups_avg_zscale_cdca7$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_cdca7[!blups_avg_zscale_cdca7$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_cdca7_average/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### Cluster1 average,log2
+```{r}
+clusters <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", header=T, sep=";") %>% filter(cluster==1)
+# log2 data with te 
+blups_long_log2_cl1_tes <- inner_join(blups_long_log2,clusters, by=c("TE"))
+```
+
+```{r}
+blups_avg_log2_cl1 <- blups_long_log2_cl1_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2_cl1$accession <- as.numeric(blups_avg_log2_cl1$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_cl1[!blups_avg_log2_cl1$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### Cluster2 average,log2
+```{r}
+clusters <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", header=T, sep=";") %>% filter(cluster==2)
+# log2 data with te 
+blups_long_log2_cl2_tes <- inner_join(blups_long_log2,clusters, by=c("TE"))
+```
+
+```{r}
+blups_avg_log2_cl2 <- blups_long_log2_cl2_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2_cl2$accession <- as.numeric(blups_avg_log2_cl2$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_cl2[!blups_avg_log2_cl2$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### Cluster3 average,log2
+```{r}
+clusters <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", header=T, sep=";") %>% filter(cluster==3)
+# log2 data with te 
+blups_long_log2_cl3_tes <- inner_join(blups_long_log2,clusters, by=c("TE"))
+```
+
+```{r}
+blups_avg_log2_cl3 <- blups_long_log2_cl3_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_log2_cl3$accession <- as.numeric(blups_avg_log2_cl3$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_log2_cl3[!blups_avg_log2_cl3$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### Cluster1 average,zscale
+```{r}
+clusters <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", header=T, sep=";") %>% filter(cluster==1)
+# log2 data with te 
+blups_long_zscale_cl1_tes <- inner_join(blups_long_zscale,clusters, by=c("TE"))
+```
+
+```{r}
+blups_avg_zscale_cl1 <- blups_long_zscale_cl1_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_zscale_cl1$accession <- as.numeric(blups_avg_zscale_cl1$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_cl1[!blups_avg_zscale_cl1$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster1/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### Cluster2 average,zscale
+```{r}
+clusters <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", header=T, sep=";") %>% filter(cluster==2)
+# log2 data with te 
+blups_long_zscale_cl2_tes <- inner_join(blups_long_zscale,clusters, by=c("TE"))
+```
+
+```{r}
+blups_avg_zscale_cl2 <- blups_long_zscale_cl2_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_zscale_cl2$accession <- as.numeric(blups_avg_zscale_cl2$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_cl2[!blups_avg_zscale_cl2$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster2/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+### Cluster3 average,zscale
+```{r}
+clusters <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", header=T, sep=";") %>% filter(cluster==3)
+# log2 data with te 
+blups_long_zscale_cl3_tes <- inner_join(blups_long_zscale,clusters, by=c("TE"))
+```
+
+```{r}
+blups_avg_zscale_cl3 <- blups_long_zscale_cl3_tes %>% 
+  group_by(accession) %>% 
+  dplyr::summarise(
+    ddm1_avg = mean(BLUP, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Make accession numeric 
+blups_avg_zscale_cl3$accession <- as.numeric(blups_avg_zscale_cl3$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_avg_zscale_cl3[!blups_avg_zscale_cl3$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,ddm1_avg)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_clusters/cluster3/zscale/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+```
+## Individual TEs log2 transformed 
+```{r}
+blups_long_log2$accession <- as.numeric(blups_long_log2$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_long_log2[!blups_long_log2$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,BLUP,TE)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$TE)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_tes/log2"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(TE == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,BLUP)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+## Individual TEs, zscale transformed
+```{r}
+blups_long_zscale$accession <- as.numeric(blups_long_zscale$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- blups_long_zscale[!blups_long_zscale$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,BLUP,TE)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+long_df_final$TE <- gsub("/", "_", long_df_final$TE)
+unique_TEs <- unique(long_df_final$TE)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_tes/zscale"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(TE == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,BLUP)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+## Number of re-silenced TEs
+```{r}
+library(dplyr)
+long_data_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_long_data_with_controls.csv")
+long_data_anti_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sense_long_data_with_controls.csv")
+
+long_data_anti_sense <- long_data_anti_sense %>%
+  mutate(TE = gsub("_AS$", "", TE))
+# TEs unique to each
+sense_only_TEs <- setdiff(long_data_sense$TE, long_data_anti_sense$TE)
+anti_only_TEs  <- setdiff(long_data_anti_sense$TE, long_data_sense$TE)
+# Filter and combine
+long_data_combined <- bind_rows(
+  long_data_sense %>% filter(TE %in% sense_only_TEs),
+  long_data_anti_sense %>% filter(TE %in% anti_only_TEs)
+)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# log2 transform data 
+long_data_combined$expression_value <- log2(long_data_combined$expression_value+1)
+# Get controls 
+long_data_combined_control <- long_data_combined %>%
+  filter(accession == 6909 & genotype %in% c("ct_col", "ddm1_ct"))
+
+# Select controls to the separate dfs
+long_data_combined_control_d <- long_data_combined_control %>%
+  filter(genotype == "ddm1_ct")
+
+long_data_combined_control_col <- long_data_combined_control %>%
+  filter(genotype == "ct_col")
+
+# Apply expression filters
+long_data_combined_control_ddm1 <- long_data_combined_control_ddm1 %>%
+  group_by(TE) %>%
+  filter(all(expression_value > 1)) %>%    # ALL replicates > 1 in ddm1
+  ungroup()
+
+long_data_combined_control_col <- long_data_combined_control_col %>%
+  group_by(TE) %>%
+  filter(all(expression_value >= 0 & expression_value <= 1)) %>%   # ALL replicates 0-1 in ct_col
+  ungroup()
+
+# Get reference TEs present in both conditions
+re_silenced_tes_ref <- inner_join(
+  long_data_combined_control_ddm1 %>% distinct(TE),
+  long_data_combined_control_col %>% distinct(TE),
+  by = "TE"
+)
+
+## Make a heatmap of these TEs 
+resilenced_TEs_ref <- long_data_combined %>% filter(accession==6909) %>%
+  filter(TE %in% re_silenced_tes_ref$TE) %>% select(TE, sample_id, expression_value)
+
+## Make a heatmap
+library(ComplexHeatmap)
+
+# Pivot data to wide format (matrix)
+heatmap_matrix <- resilenced_TEs_ref %>%
+  pivot_wider(names_from = sample_id, values_from = expression_value, values_fill = 0) %>%
+  column_to_rownames("TE") %>%
+  as.matrix()
+
+Heatmap(
+      heatmap_matrix, 
+      name = "log2(counts)", 
+      cluster_columns = TRUE,
+      cluster_rows = TRUE,
+      clustering_distance_columns = "euclidean",
+      show_column_names = TRUE,
+      show_row_names = FALSE,
+      show_heatmap_legend = TRUE,
+      row_km = 1,
+      row_km_repeats = 1000,
+      column_km_repeats = 1000,
+      column_km = 2,
+      #column_split = TRUE,
+      column_names_gp = gpar(fontsize = 5),
+      row_names_gp = gpar(fontsize = 5),
+      heatmap_legend_param = list(
+        title_gp = gpar(fontsize = 13),
+        labels_gp = gpar(fontsize = 13)))
+```
+
+```{r}
+# Now apply to all accessions: F1_ddm1 between 0-1, F1_Col == 0
+long_data_combined$sample_id <- NULL
+
+long_data_combined$genotype[long_data_combined$accession == 6909 & 
+                             long_data_combined$genotype == "ct_col"] <- "Col"
+# Step 1: Take mean across duplicates 
+resilenced_TEs <- long_data_combined %>%
+  filter(TE %in% re_silenced_tes_ref$TE) %>%
+  filter(genotype %in% c("ddm1", "Col")) %>%
+  group_by(TE, accession, genotype) %>%                                
+  summarise(expression_value = mean(expression_value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = genotype, values_from = expression_value)
+
+resilenced_TEs <- resilenced_TEs %>%
+  group_by(TE, accession) %>%
+  filter(
+    (ddm1 >= 0 & Col ==0 | ddm1 >= 1 & Col ==1 )) %>%
+  ungroup() %>%
+  distinct(TE, accession) %>%       # one row per TE-accession combination
+  group_by(accession) %>%
+  dplyr::summarise(n_resilenced_TEs = n(), .groups = "drop") %>%
+  arrange(desc(n_resilenced_TEs))
+
+## Arrange
+
+resilenced_TEs$accession <- as.numeric(resilenced_TEs$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- resilenced_TEs[!resilenced_TEs$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-'0'
+long_df_final$null2<-'0'
+long_df_final$null3<-'0'
+long_df_final$null4<-'0'
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,n_resilenced_TEs)
+# Order accessions in specific manner
+accession_list <-read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt", header=T)
+long_df_final <- long_df_final[order(match(long_df_final$accession, accession_list$accession)), ]
+
+write.table(long_df_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/number_of_res_tes/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam",quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+
+write.csv2(long_data_combined,"/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/number_of_resilenced_tes.csv", quote = F, row.names = F)
+```
+## Individual genes log2
+```{r}
+gene_expression_sense <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/sense_expr_te_genes_no_filter_reads_log2cpm_normalization.csv.gz")
+# Get only genes 
+sense_expression_only_genes <- gene_expression_sense %>%
+  filter(!grepl("TE", id))%>% select(id,accession,replicate,Genotype,log2cpm)
+# Get an average per accession
+sense_expression_only_genes_ddm1 <- sense_expression_only_genes %>% filter(Genotype=="F1_ddm1") %>% group_by(accession, id) %>% dplyr::summarise(avg=mean(log2cpm))
+sense_expression_only_genes_col0 <- sense_expression_only_genes %>% filter(Genotype=="F1_Col"| Genotype=="ct_col") %>% group_by(accession, id) %>% dplyr::summarise(avg=mean(log2cpm))
+```
+```{r}
+# Make accession numeric 
+sense_expression_only_genes_col0$accession <- as.numeric(sense_expression_only_genes_col0$accession)
+## Remove accessions from Tom's heterozygosity list
+accessions_not_distingquished <- read.table("/groups/nordborg/common_data/fernandos_SNP_calls/heterozygous_accessions.txt")
+#samples that doesnt exisit in the file plus 9981 which behaves wierd 
+long_df_final <- sense_expression_only_genes_col0[!sense_expression_only_genes_col0$accession %in% accessions_not_distingquished$V1, ]
+
+long_df_final$null1<-0
+long_df_final$null2<-0
+long_df_final$null3<-0
+long_df_final$null4<-0
+
+
+long_df_final <- long_df_final %>% dplyr::select(null1,accession,null2,null3,null4,avg,id)
+# Order accessions in specific manner
+accessions <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/core_files/accession_list.txt")
+colnames(accessions) <- "accession"
+long_df_final <- long_df_final[order(match(long_df_final$accession, accessions$accession)), ]
+# Loop through each TE and write to its own folder
+unique_TEs <- unique(long_df_final$id)
+
+base_path <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/f1col0"
+
+long_df_final <- long_df_final %>% ungroup()
+
+for (te in unique_TEs) {
+  te_df <- long_df_final %>%
+    dplyr::filter(id == te) %>%
+    dplyr::select(null1, accession, null2, null3, null4,avg)
+  # Create full path for TE
+  te_dir <- file.path(base_path, te)
+  dir.create(te_dir, showWarnings = FALSE, recursive = TRUE)
+  # Write the file inside the TE folder
+  write.table(te_df,
+              file = file.path(te_dir, "1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam"),
+              quote = FALSE,
+              sep = "\t",
+              row.names = FALSE,
+              col.names = FALSE)}
+```
+```
+
+
+
+
+
+
+

@@ -1,0 +1,168 @@
+---
+title: "010_permutation_gwas"
+output: html_document
+date: "2025-03-22"
+---
+
+```{r setup, include=FALSE}
+library(MASS)       # For ginv()
+library(mvnpermute) # For mvnpermute()
+library(matrixcalc) # For is.positive.semi.definite()
+```
+## Load data 
+```{r}
+fn_phenotypes <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_removed_outlier_replicates/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam"  # Phenotype data (e.g., SNP or trait data)
+fn_kinship <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_removed_outlier_replicates/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.cXX.txt"    # Kinship matrix
+
+# Load phenotype data
+phenotypes <- read.csv(fn_phenotypes, sep = '\t', header = F)
+n_acc <- nrow(phenotypes)
+
+# Load kinship matrix
+K <- as.matrix(read.csv(fn_kinship, sep = '\t', header = F))
+```
+## Check kinship matrix
+```{r}
+if (!is.positive.semi.definite(K)) {
+  stop("Kinship matrix is not positive semi-definite.")
+} else {
+  print("Kinship matrix is valid (positive semi-definite).")
+}
+```
+
+```{r}
+# Use EMMA to calculate variance components
+null <- emma.REMLE(phenotypes$V10, 
+                    as.matrix(x = rep(1, n_acc), dim = c(n_acc, 1)), 
+                    K)
+herit <- null$vg / (null$vg + null$ve)
+
+vg <- null$vg  # Genetic variance
+ve <- null$ve  # Environmental variance
+
+cat("Genetic Variance (vg):", vg, "\n")
+cat("Environmental Variance (ve):", ve, "\n")
+cat("Heritability (h²):", herit, "\n")
+```
+## Create a covariance matrix
+```{r}
+# Construct the covariance matrix
+COV_MATRIX <- null$vg * K + null$ve * diag(dim(K)[1])
+```
+
+```{r}
+n_permute <- 1000  # Adjust based on computational resources
+
+# Permute the phenotypes
+set.seed(123)  # For reproducibility
+permute_phenotype <- mvnpermute(phenotypes$V10, 
+                                rep(1, n_acc), 
+                                COV_MATRIX, 
+                                nr = n_permute)
+n_permute <- ncol(permute_phenotype)
+```
+## Write output to the directory
+```{r}
+# Number of permutations
+n_permute <- ncol(permute_phenotype)
+
+# Set the parent directory
+parent_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_removed_outlier_replicates_permutation"
+
+# Create the parent directory if it doesn't exist
+if (!dir.exists(parent_dir)) {
+  dir.create(parent_dir, recursive = TRUE)
+}
+
+# Create directories for each permutation
+for (i in 1:n_permute) {
+  dir_name <- file.path(parent_dir, paste0("permutation_", i))
+  if (!dir.exists(dir_name)) {
+    dir.create(dir_name, showWarnings = FALSE)
+  }
+}
+
+# Save each permuted phenotype into its respective directory
+for (i in 1:n_permute) {
+  dir_name <- file.path(parent_dir, paste0("permutation_", i))
+  
+  # Initialize the permuted data frame
+  permuted_data <- data.frame(
+    V1 = phenotypes$V1,
+    V2 = phenotypes$V2,
+    V3 = phenotypes$V3,
+    V4 = phenotypes$V4,
+    V5 = phenotypes$V5,
+    V6 = permute_phenotype[, i]
+  )
+  
+  # Construct the file path
+  file_path <- file.path(dir_name, paste0("1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam"))
+  
+  # Save the data
+  write.table(permuted_data, file_path, row.names = FALSE, quote = F, col.names = F, sep="\t")
+  
+  cat(paste0("Saved permutation ", i, " to ", file_path, "\n"))
+}
+
+cat("All permutations have been saved to their respective directories.\n")
+```
+
+### Extract test stat
+```{r}
+# Initialize an empty data frame to store test statistics
+# Define the parent directory where permutation directories are stored
+permuted_snps <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/permutations/output/top_snps_by_permutation.txt")
+```
+
+
+
+```{r}
+### Calculate permuted thereshold 
+alpha <- 0.05
+threshold <- quantile(permuted_snps$p_wald, probs = alpha, na.rm = TRUE)
+-log10(threshold)
+```
+
+```{r}
+hist(min_p_per_perm, breaks = 50, 
+     main = "Minimum P-value per Permutation",
+     xlab = "p-value", col = "lightblue", xlim = c(0, max(min_p_per_perm)))
+abline(v = threshold, col = "red", lty = 2, lwd = 2)
+legend("topright", legend = paste("Threshold =", format(threshold, scientific = TRUE)), 
+       col = "red", lty = 2, lwd = 2)
+```
+```{r}
+# Flatten all permuted p-values into a vector
+all_perm_p <- as.vector(as.matrix(permuted_snps))
+all_perm_p <- na.omit(all_perm_p)
+
+# Compute λ
+chi2 <- qchisq(all_perm_p, df = 1, lower.tail = FALSE)
+lambda <- median(chi2, na.rm = TRUE) / 0.454  # 0.454 = median of χ²(1) under null
+cat("Genomic inflation factor (λ):", lambda)
+```
+
+
+
+```{r}
+expected_p <- apply(permuted_snps, 1, function(x) mean(x, na.rm = TRUE))
+observed_p <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_removed_outlier_replicates/output/blups_union_effect_acc.assoc.txt", header = T)$p_wald
+# QQ-plot
+qqplot(-log10(expected_p), -log10(observed_p), main="QQ-Plot: Real vs Permuted P-values")
+abline(0, 1, col="red")  # Add line of e
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

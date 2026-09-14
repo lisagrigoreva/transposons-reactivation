@@ -1,0 +1,399 @@
+---
+title: "008_create_virtual_f1"
+output: html_document
+date: "2025-02-21"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+```
+## Read expression dataframe with controls 
+```{r}
+
+```
+# Get controls
+```{r}
+# Average wt and ddm1
+all_tes <- all_tes %>%
+  mutate(col_avg_wt = rowMeans(select(., matches("(ct_col)")), na.rm = TRUE))
+
+all_tes <- all_tes %>%
+  mutate(ddm1_avg_wt = rowMeans(select(., matches("(ddm1_ct)")), na.rm = TRUE))
+
+# Create virtual F1
+all_tes$virtual_f1 <- (all_tes$col_avg_wt+all_tes$ddm1_avg_wt)/2
+
+# Get only accession specific TEs
+filtered_tes <- all_tes[all_tes$V1 %in% accession_specific_tes$V1, ]
+```
+## Create virtual F1
+```{r}
+filtered_tes$virt1 <- (filtered_tes$ct_col_6909_2_17614+filtered_tes$ddm1_ct_6909_3_17609)/2
+ggplot(filtered_tes, 
+       aes(x = log2(virtual_f1 + 1), 
+           y = log2(F1_ddm1_6909_3_17621 + 1),
+           color = (F1_ddm1_6909_3_17621/virtual_f1) < 0.5)) +
+  geom_point() +
+  geom_smooth(method = "lm", 
+              color = "red",
+              se = TRUE) +
+  scale_color_manual(values = c("black", "green")) +  # black for FALSE, green for TRUE
+  labs(x = "Virtual F1",
+       y = "F1 ddm1 6909",
+       title = "Virtual F1 vs F1 ddm1 Correlation") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+# Run limma on virtual F1 
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Get all columns that contain "F1_ddm1"
+ddm1_cols <- names(filtered_tes)[grep("F1_ddm1", names(filtered_tes))]
+
+# Create a dataframe in long format
+long_data <- filtered_tes %>%
+  select(virtual_f1, all_of(ddm1_cols)) %>%
+  pivot_longer(
+    cols = starts_with("F1_ddm1"),
+    names_to = "ddm1_column",
+    values_to = "ddm1_value"
+  ) %>%
+  # Extract accession numbers
+  mutate(
+    accession = sub(".*ddm1_(\\d+)_.*", "\\1", ddm1_column)
+  )
+```
+
+```{r}
+unique_ddm1_cols <- unique(long_data$ddm1_column)
+selected_cols <- sample(unique_ddm1_cols, 30)
+
+# Filter the long_data to keep only these 50 random columns
+long_data_50_filtered <- long_data_50 %>%
+  filter(ddm1_value > 0)
+
+# Create the plot
+ggplot(long_data_50_filtered, 
+       aes(x = log2(virtual_f1 + 2), 
+           y = log2(ddm1_value + 2),
+           color = (ddm1_value/virtual_f1) < 0.5)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", 
+              color = "red",
+              se = TRUE) +
+  facet_wrap(~accession, scales = "free") +
+  scale_color_manual(values = c("black", "green")) +
+  labs(x = "log2(Virtual F1 + 1)",
+       y = "log2(F1 ddm1 + 1)",
+       title = "Virtual F1 vs F1 ddm1 Correlations by Accession") +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 10),
+    plot.title = element_text(size = 12),
+    legend.position = "none"
+  )
+
+```
+##########################
+#### Create virtual F1 ###
+########################
+#DeSeq2 
+## Upload sampledata and order it 
+```{r setup{}
+
+# Read data with filtered number of reads, at least 2 replicates and no misclustered samples
+sampleData <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/filtered_data_wo_misclustered_wo_traps_2_repl.txt", header=T)
+# Join sample data with filtered data
+#Reorder in alphabetic order
+sampleData<- sampleData[order(sampleData$Sample_id),] 
+#Make rownames acession names
+rownames(sampleData) <- sampleData$Sample_id
+sampleData <- as.data.frame(sampleData)
+#sampleData <- na.omit(sampleData)
+## Select only F1 ddm1 and controls 
+sampleData <- sampleData[sampleData$Genotype=="ct_col" | sampleData$Genotype=="ddm1_ct" |sampleData$Genotype=="F1_ddm1" ,]
+```
+##Create tx2gene object 
+```{r}
+tx2gene <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/tx2gene.txt",header=F)
+```
+## Upload TE annotation 
+```{r}
+#Annotation of selected TEs  
+annotation_tair10_families <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/tes_annotation_with_superfamily.csv", sep=",", header=T)
+```
+## Import salmon data 
+```{r}
+library(tximport)
+
+# Base directory for Salmon outputs
+salmon_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/005_quant/all_plates_96w_salmon/"
+
+# Dynamically construct paths for each sample in sampleData$Sample
+sample_paths <- file.path(salmon_base_dir, sampleData$Sample_id)
+
+# List all quant.sf files within these sample paths
+files <- file.path(sample_paths, "quant.sf")
+
+# Check which files exist
+existing_files <- files[file.exists(files)]
+
+# Extract sample IDs for the existing files
+fileSampleIDs <- basename(dirname(existing_files))
+
+# Create a named vector for tximport: names are sample IDs
+names(existing_files) <- fileSampleIDs
+
+# Perform tximport for Salmon quantification
+txi.salmon <- tximport(existing_files, type = "salmon", tx2gene = tx2gene)
+
+# View a summary of the imported data
+summary(txi.salmon)
+# Filter sampledata 
+filteredSampleData <- sampleData[sampleData$Sample_id %in% fileSampleIDs, ]
+rownames(filteredSampleData) <- filteredSampleData$Sample_id
+
+
+##Subset txi salmon
+sampleNames <- rownames(filteredSampleData)
+
+# Subset the txi.salmon object based on the sample names
+txi.salmon$counts <- txi.salmon$counts[, sampleNames, drop = FALSE]
+txi.salmon$abundance <- txi.salmon$abundance[, sampleNames, drop = FALSE]
+txi.salmon$length <- txi.salmon$length[, sampleNames, drop = FALSE]
+```
+
+##Make limma+voom model
+```{r}
+library(edgeR)
+library(limma)
+counts <- txi.salmon$counts
+# Paste count names
+colnames(counts) <- paste(filteredSampleData$Genotype,filteredSampleData$Accession,filteredSampleData$Replicate,filteredSampleData$Request_id,sep="_")
+new_colnames <- paste(filteredSampleData$Genotype, filteredSampleData$Accession, filteredSampleData$Replicate,filteredSampleData$Request_id, sep="_")
+new_colnames_unique <- make.unique(new_colnames)
+colnames(counts) <- new_colnames_unique
+## Create a virtual F1 
+counts <-  as.data.frame(counts)
+counts$F1_virt_6909_1_17222 <- (counts$ct_col_6909_1_17222+counts$ddm1_ct_6909_1_17222)/2
+counts$F1_virt_6909_2_17617 <- (counts$ct_col_6909_2_17617+counts$ddm1_ct_6909_2_17617)/2
+counts$F1_virt_6909_2_17620 <- (counts$ct_col_6909_2_17620+counts$ddm1_ct_6909_2_17620)/2
+#counts$F1_virt_6909_2_17623 <- (counts$ct_col_6909_2_17623+counts$ddm1_ct_6909_2_17623)/2
+counts$F1_virt_6909_3_17609 <- (counts$ct_col_6909_3_17609+counts$ddm1_ct_6909_3_17609)/2
+counts$F1_virt_6909_3_17618 <- (counts$ct_col_6909_3_17618+counts$ddm1_ct_6909_3_17618)/2
+counts$F1_virt_6909_3_17621 <- (counts$ct_col_6909_3_17621+counts$ddm1_ct_6909_3_17621)/2
+## Add info to the count table
+
+virtual_F1_data <- data.frame(
+  Sample_id = paste0("vF1_", c(6909, 6909, 6909, 6909, 6909, 6909)),
+  Request_id = c(17222, 17617, 17620, 17609, 17618, 17621),
+  Accession = rep(6909, 6),
+  Variant = rep("virtual", 6),
+  Genotype = rep("F1_virtual", 6),
+  Replicate = c(1, 2, 2, 3, 3, 3),
+  Number_of_Reads = NA,  # You might want to fill this with actual read counts if available
+  Sequencing.date = c("2024-06-10","2024-10-18","2024-10-18","2024-10-21","2024-10-18","2024-10-18"),  # Using the same date as other samples
+  Controls.deep.sequencing = rep("", 6),
+  Plate.position = rep(NA, 6)
+)
+filteredSampleData_new <- rbind(filteredSampleData, virtual_F1_data)
+```
+
+```{r}
+d0 <- DGEList(counts)
+## Calculate cutoff factor (based on million reads in the library)
+keep <- rowSums(cpm(d0) > 1) >= 3
+table(keep)
+```
+## Virtual F1 VS real F1
+```{r}
+d0_filtered = d0[keep,]
+d0 <- calcNormFactors(d0_filtered)
+dim(d0)
+# Calculate model 
+variant <- paste(filteredSampleData_new$Genotype)
+accession <- as.factor(filteredSampleData_new$Accession)
+replicate <- as.factor(filteredSampleData_new$Replicate)
+# Add sequencing date 
+filteredSampleData_new$Sequencing.date <- gsub("-", "_",filteredSampleData_new$Sequencing.date)
+sequencing_date <- as.factor(filteredSampleData_new$Sequencing.date)
+
+
+filteredSampleData_new$comparison_group <- ifelse(
+  filteredSampleData_new$Variant == "virtual",
+  "virtual_F1",
+  paste0(filteredSampleData_new$Accession, "_ddm1")
+)
+
+group <- as.factor(filteredSampleData_new$comparison_group)
+design <- model.matrix(~0+group+sequencing_date+replicate)# Apply batch effect correction 
+
+# Calculate variance in dataset 
+y <- voom(d0, design, plot = T)
+fit <- lmFit(y, design)
+
+save(fit, file = "/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/virtual_f1/fit_object_virtual_vs_real+replicate+sequencing_date_per_acc.RData")
+head(coef(fit))
+```
+
+```{r}
+output_folder <- "/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/virtual_f1/"
+dir.create(output_folder, recursive = TRUE, showWarnings = FALSE)
+
+# Get all unique ddm1 accessions (excluding the virtual F1)
+ddm1_accessions <- unique(filteredSampleData_new$Accession[filteredSampleData_new$Variant == "ddm1"])
+
+DEG_results <- list()
+
+# Loop through each ddm1 accession
+for (acc in ddm1_accessions) {
+  # Create contrast
+  contrast <- makeContrasts(
+    paste0("groupvirtual_F1 - group", acc, "_ddm1"),
+    levels = design
+  )
+  
+  # Apply contrast and eBayes
+  fit_acc <- contrasts.fit(fit, contrast)
+  fit_acc <- eBayes(fit_acc)
+  
+  # Get all genes
+  all_genes <- topTable(fit_acc, adjust = "fdr", number = Inf)
+  
+  # Filter significant DEGs
+  up_genes <- all_genes[all_genes$adj.P.Val <= 0.05 & all_genes$logFC >= 1, ]
+  down_genes <- all_genes[all_genes$adj.P.Val <= 0.05 & all_genes$logFC <= -1, ]
+  all_sig_genes <- all_genes[all_genes$adj.P.Val <= 0.05, ]
+  
+  # Save results
+  DEG_results[[as.character(acc)]] <- list(
+    all = all_genes,
+    significant = all_sig_genes,
+    up = up_genes,
+    down = down_genes
+  )
+  
+  # Write results to files
+  write.csv(all_genes, 
+            file = file.path(output_folder, paste0("All_genes_virtual_vs_", acc, ".csv")))
+  
+  write.csv(all_sig_genes, 
+            file = file.path(output_folder, paste0("Significant_DEGs_virtual_vs_", acc, ".csv")))
+  
+  write.csv(up_genes, 
+            file = file.path(output_folder, paste0("Upregulated_DEGs_virtual_vs_", acc, ".csv")))
+  
+  write.csv(down_genes, 
+            file = file.path(output_folder, paste0("Downregulated_DEGs_virtual_vs_", acc, ".csv")))
+  
+  # Create a summary
+  summary_stats <- data.frame(
+    Accession = acc,
+    Total_genes = nrow(all_genes),
+    Significant_DEGs = nrow(all_sig_genes),
+    Upregulated = nrow(up_genes),
+    Downregulated = nrow(down_genes)
+  )
+  
+  write.csv(summary_stats, 
+            file = file.path(output_folder, paste0("Summary_stats_virtual_vs_", acc, ".csv")))
+}
+
+# Create overall summary
+overall_summary <- do.call(rbind, lapply(names(DEG_results), function(acc) {
+  data.frame(
+    Accession = acc,
+    Total_DEGs = nrow(DEG_results[[acc]]$significant),
+    Upregulated = nrow(DEG_results[[acc]]$up),
+    Downregulated = nrow(DEG_results[[acc]]$down)
+  )
+}))
+
+
+# Print summary
+print("Number of DEGs for each comparison:")
+print(overall_summary)
+```
+
+
+```{r}
+ggplot(overall_summary, aes(Upregulated))+geom_histogram()
+
+ggplot(overall_summary, aes(x = reorder(Accession, Downregulated), y = Downregulated)) +
+  geom_point(color = "#A35C7A", size = 2) +
+  theme_minimal() +
+  labs(title = "Unique TE Counts by Accession", 
+       x = "Accession", 
+       y = "Downregulated TEs") +
+  theme(axis.text.x = element_blank(),
+         axis.text.y = element_blank()) + 
+  coord_flip()
+
+
+```
+
+## Add geography
+```{r}
+metainformation <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/metainformtaion_accessions.txt", sep="\t", header=T)
+metainformation <- metainformation %>% dplyr::select(accession.ID,Admixture.Groupe,country, longitude,latitude)
+metainformation$accession.ID <- as.numeric(metainformation$accession.ID)
+overall_summary$Accession <- as.numeric(overall_summary$Accession)
+phenotype_sum_with_metainfo <- left_join(overall_summary,metainformation, by=c("Accession"="accession.ID"))
+
+```
+
+```{r}
+ggplot(phenotype_sum_with_metainfo, aes(x = reorder(Admixture.Groupe, Downregulated, median), y = Downregulated, fill = Admixture.Groupe)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Downregulated TEs by Country (Sorted)",
+       x = "Country",
+       y = "Number of Hypomethylated TEs") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+## Calculate heritability
+```{r}
+library(lme4)
+model_random <- lmer(Downregulated ~ 1 + (1|Accession), data = phenotype_sum_with_metainfo)
+summary(model_random)
+
+
+```
+
+
+```{r}
+write.table(phenotype_sum_with_metainfo,"/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/virtual_f1/phenotype_mit_metoinfo.csv", sep="\t", row.names = F)
+```
+## Create gemma phenotype 
+```{r}
+phenotype_sum_with_metainfo$null <- '0'
+phenotype_sum_with_metainfo$null1 <- '0'
+phenotype_sum_with_metainfo$null2 <- '0'
+phenotype_sum_with_metainfo$null3 <- '0'
+
+
+gemma_phenotype <- phenotype_sum_with_metainfo %>% select(null,Accession,null1,null2,null3,Downregulated) 
+gemma_phenotype <- gemma_phenotype[gemma_phenotype$Accession!=5857 & gemma_phenotype$Accession!=6364 & gemma_phenotype$Accession!=8348,]
+
+# Order based on the phenotype 
+
+phenotype <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm_minus_col_average_per_replicate_common_set/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam", sep="\t", header=F)
+merged_data <- merge(gemma_phenotype, phenotype, by.x = "Accession", by.y = "V2")
+gemma_phenotype <- merged_data %>% select(null,Accession,null1,null2,null3,Downregulated) 
+
+
+write.table(gemma_phenotype,"/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/virtual_f1_downregulated/phenotype.csv", sep="\t", row.names = F, quote = F)
+```
+
+
+
+
+

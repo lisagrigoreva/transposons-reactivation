@@ -1,0 +1,54 @@
+---
+title: "008_create_phenotype_mat_expressed_tes"
+output: html_document
+date: "2025-11-21"
+---
+
+```{r}
+library(data.table)
+```
+
+## Read saved table 
+```{r}
+reshaped_allele_specific_expr <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/quantification/counts/reshaped_allele_specific_expr.csv")
+```
+## Add information about samples
+```{r}
+sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_phenotype_preprocessed_based_on_pca_with_selfers_v2.csv",header=T)
+sampledata <- sampledata %>% dplyr::select(Sample_id,Accession,Variant,Genotype)
+# Join with reads
+reshaped_data_with_sampleinfo <- inner_join(sampledata,reshaped_allele_specific_expr, by=c("Sample_id"="sample_clean"))
+```
+
+```{r}
+library(pheatmap)
+library(ggplot2)
+
+# Read the KING matrix
+# Read the genetic relationship matrix
+rel_matrix <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/core_files/genetic_dist.rel", header=FALSE)
+
+# Read sample IDs
+rel_ids <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/core_files/genetic_dist.rel.id", header=FALSE)
+sample_names <- rel_ids$V1 
+
+# Add row and column names
+rownames(rel_matrix) <- sample_names
+colnames(rel_matrix) <- sample_names
+
+# Convert relatedness to distance
+reference_acc <- "6909"
+
+# Get relatedness from reference to all others
+relatedness_from_ref <- rel_matrix[reference_acc, ]
+relatedness_from_ref <- as.data.frame(t(relatedness_from_ref))
+relatedness_from_ref$acc <- rownames(relatedness_from_ref)
+colnames(relatedness_from_ref) <- c("comp", "acc")
+# Filter for CLOSE accessions (high relatedness)
+close_accessions <- relatedness_from_ref[relatedness_from_ref$comp > 0.2,]
+
+write.csv2(close_accessions, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/core_files/close_accession.csv", quote = F, row.names = F)
+```
+
+
+

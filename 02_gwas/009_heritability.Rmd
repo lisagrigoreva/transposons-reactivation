@@ -1,0 +1,1238 @@
+```{r}
+library(lme4)
+library(dplyr)
+```
+
+```{r}
+# Load data
+dir = "/groups/nordborg/projects/ddm1_resilencing/"
+sampleData = read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/filtered_data_wo_misclustered_wo_traps_2_repl_with_ds_controls_with_rna_extr_date.txt", header=T)
+expression_df <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/accession_specific_effect/expression_salmon_limma_normilized_genes_signif_padj005_log2fc2_union_effect_wo_controls_batch_corrected_seq_date_selected_based_on_Col0_tes_miscross_selfers_removed.csv", sep=",")
+rownames(expression_df) <- expression_df$X
+
+## Remove TEs overlapping genes
+overlapping_tes <- read.csv("/groups/nordborg/projects/ddm1_resilencing/04_output/te_filtering_overlap/filtered_atleast1bp_overalp_with_te_genes_id_list.csv")
+
+filtered_df <- expression_df[!rownames(expression_df) %in% overlapping_tes$x, ]
+expression_df <- filtered_df
+
+## Select CMT2-related TEs
+
+eriko_cmt2_genes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_eriko_targets/cmt2_target_tes.txt", header=F)
+filtered_target <- expression_df[rownames(expression_df) %in% eriko_cmt2_genes$V1, ]
+expression_df <- filtered_target
+names <-expression_df$X 
+expression_df$X <- NULL
+expression_df <- as.data.frame(apply(expression_df, 2, as.numeric))
+rownames(expression_df) <- names
+```
+
+
+# Pair data 
+```{r}
+# Function to extract accession ID and replicate
+extract_info <- function(sample_name) {
+  parts <- strsplit(sample_name, "_")[[1]]
+  if (length(parts) >= 4) {
+    accession_id <- parts[3]
+    replicate <- parts[4]
+    return(list(accession_id = accession_id, replicate = replicate))
+  }
+  return(NULL)
+}
+
+# Group samples by accession ID and replicate
+samples_by_id <- list()
+for (col in colnames(expression_df)) {
+  # Special case for accession 6909
+  if (grepl("6909", col)) {
+    # Extract just the accession and replicate for 6909
+    accession_id <- "6909"
+    replicate_match <- regexpr("_[0-9]+(?=_[0-9]+$)", col, perl = TRUE)
+    if (replicate_match > 0) {
+      replicate <- substr(col, replicate_match + 1, replicate_match + attr(replicate_match, "match.length") - 1)
+      key <- paste(accession_id, replicate, sep = "_")
+      if (!(key %in% names(samples_by_id))) {
+        samples_by_id[[key]] <- c()
+      }
+      samples_by_id[[key]] <- c(samples_by_id[[key]], col)
+    }
+  } else {
+    # Normal case for other accessions
+    info <- extract_info(col)
+    if (!is.null(info)) {
+      key <- paste(info$accession_id, info$replicate, sep = "_")
+      #print(key)
+      if (!(key %in% names(samples_by_id))) {
+        samples_by_id[[key]] <- c()
+      }
+      samples_by_id[[key]] <- c(samples_by_id[[key]], col)
+    }
+  }
+}
+
+# Create sample pairs
+sample_pairs <- list()
+unpaired_col <- c()
+unpaired_ddm1 <- c()
+
+for (key in names(samples_by_id)) {
+  samples <- samples_by_id[[key]]
+  # For accession 6909, use case-insensitive matching for Col
+  if (grepl("^6909_", key)) {
+    col_samples <- samples[grepl("[Cc]ol", samples, ignore.case = TRUE)]
+    ddm1_samples <- samples[grepl("ddm1", samples)]
+  } else {
+    # For other accessions, use the original approach
+    col_samples <- samples[grepl("Col", samples)]
+    ddm1_samples <- samples[grepl("ddm1", samples)]
+  }
+  
+  # Pair samples if both Col and ddm1 exist
+  if (length(col_samples) > 0 && length(ddm1_samples) > 0) {
+    sample_pairs[[col_samples[1]]] <- ddm1_samples[1]
+  } else {
+    if (length(col_samples) > 0) {
+      unpaired_col <- c(unpaired_col, col_samples)
+    }
+    if (length(ddm1_samples) > 0) {
+      unpaired_ddm1 <- c(unpaired_ddm1, ddm1_samples)
+    }
+  }
+}
+
+# Print the resulting pairs
+#cat("Sample pairs:\n")
+#for (col_sample in names(sample_pairs)) {
+#  ddm1_sample <- sample_pairs[[col_sample]]
+#  cat(sprintf("Paired: %s <-> %s\n", col_sample, ddm1_sample))
+#}
+
+```
+# Create a difference dataframe
+```{r}
+diff_df <- data.frame(row.names = rownames(expression_df))
+col0_df <- data.frame(row.names = rownames(expression_df))
+ddm1_df <- data.frame(row.names = rownames(expression_df))
+# Calculate differences and only keep Col samples
+for (col_sample in names(sample_pairs)) {
+  ddm1_sample <- sample_pairs[[col_sample]]
+  if (col_sample %in% colnames(expression_df) && 
+      ddm1_sample %in% colnames(expression_df)) {
+    # Create diff, ddm1 and col0 dfs 
+    diff_df[[col_sample]] <- expression_df[[ddm1_sample]] - expression_df[[col_sample]]
+    col0_df[[col_sample]] <- expression_df[[col_sample]]
+    ddm1_df[[ddm1_sample]] <- expression_df[[ddm1_sample]]
+    
+  }
+}
+```
+
+
+## Calculate BLUPs on the raw matrix 
+```{r}
+# Starting with your normalized expression matrix (genes × samples)
+# With samples including both conditions and replicates
+## Extract replicate
+library(stringr)
+library(tidyr)
+
+diff_df_t <- as.data.frame(t(ddm1_df))
+
+diff_df_t$Replicate <- as.numeric(str_extract(rownames(diff_df_t), "(?<=_)[0-9]+(?=_[0-9]+$)"))
+
+diff_df_t$accession <- str_extract(rownames(diff_df_t), "(?:[^_]+_){2}([^_]+)")
+diff_df_t$accession <- gsub("F1_ddm1_", "", diff_df_t$accession)
+diff_df_t$accession <- gsub("ct_col_","", diff_df_t$accession)
+diff_df_t$accession <- gsub("F1_Col_","", diff_df_t$accession)
+diff_df_t$accession <- gsub("ddm1_ct","", diff_df_t$accession)
+
+
+# Assuming your data is in a dataframe called 'expression_df'
+# First, make sure the row names are preserved as a column
+diff_df_t$sample_name <- rownames(diff_df_t)
+
+# Identify the columns to pivot (all except accession, Replicate, and sample_name)
+id_cols <- c("sample_name", "accession", "Replicate")
+value_cols <- setdiff(colnames(diff_df_t), id_cols)
+
+# Convert to long format
+long_df <- diff_df_t %>%
+  pivot_longer(
+    cols = all_of(value_cols),
+    names_to = "TE_id",
+    values_to = "expression"
+  )
+
+avg_data <- long_df %>%
+  group_by(accession) %>%
+  dplyr::summarize(avg_expression = mean(expression, na.rm = TRUE))
+
+# Make separated replicates
+
+avg_data2 <- long_df %>%
+  group_by(accession, Replicate) %>%
+  dplyr::summarize(avg_expression = mean(expression, na.rm = TRUE))
+
+wide_data <- avg_data2 %>%
+  pivot_wider(
+    id_cols = accession,
+    names_from = Replicate,
+    values_from = avg_expression,
+    names_prefix = "expression_"
+  )
+
+#write.csv2(avg_data, "/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/accession_specific_effect/expression_salmon_limma_normilized_genes_signif_padj005_#log2fc05_union_effect_wo_controls_batch_corrected_seq_date_selected_based_on_Col0_mean_centered_long_format.csv", quote = F, row.names = F)
+```
+## Write output
+```{r}
+## Get blups 
+library(lme4)
+long_df$TE_id <- as.factor(long_df$TE_id)
+long_df$accession <- as.factor(long_df$accession)
+long_df$Replicate <- as.factor(long_df$Replicate)
+
+model <- lmer(expression ~ (1|TE_id) + (1|accession) + (1|Replicate), data = long_df)
+blups_accession <- ranef(model)$accession
+
+blups_accession$accession <- rownames(blups_accession)
+blups_accession$BLUP <- blups_accession$`(Intercept)`
+blups_accession$`(Intercept)` <- NULL
+#Join with average
+blups_accession$accession <- as.numeric(blups_accession$accession)
+avg_data$accession <- as.numeric(as.character(avg_data$accession))
+blups_accession_avg <- inner_join(blups_accession,avg_data, by=("accession") )
+
+## Remove Swedish shit
+accessions_not_distingquished <- c(6070,1318,5829,1435,1585,6137,6199,6198,6136,9356,9388,9451,5835,6191,9404,6019,5857,6364,8348,5722,1435,5835,6180,5839) # Plus samples that doesnt exisit in the file
+blups_accession_final <- blups_accession_avg[!blups_accession_avg$accession %in% accessions_not_distingquished, ]
+
+ggplot(blups_accession_final, aes(BLUP, avg_expression)) +
+  geom_point() +
+  geom_text(aes(label = accession), vjust = -0.5, size = 3) +
+  xlab("BLUP") +
+  ylab("Average expression in F1 ddm1")
+
+
+# Add 0 to the matrix
+blups_accession_final$a <- 0
+blups_accession_final$b <- 0
+blups_accession_final$c <- 0
+blups_accession_final$d <- 0
+blups_accession_final <- blups_accession_final %>% select(a,accession,b,c,d,BLUP,avg_expression)
+# Change NA to -9
+blups_accession_final <- blups_accession_final %>%
+  mutate(across(everything(), ~replace(., is.na(.), -9)))
+### Make a histogram of BLUPs and average
+ggplot(blups_accession_final, aes(x=avg_expression))+
+  geom_histogram(color="black", fill="darkgreen", bins=20)
+
+## Write as dataframe
+#write.table(blups_accession_final, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_230acc_f1ddm1_blups_cmt2_targeted_tes/blup_accesions_phenotype_repl_separately.csv", quote = F, row.names = F, sep="\t", col.names =F)
+
+```
+
+```{r}
+phenotype <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/common_files/accessions_order_template.txt", sep = "\t", header = FALSE)
+phenotype$V2 <- as.numeric(phenotype$V2)
+
+# Convert accession to numeric so it matches phenotype
+blups_accession$sample <- as.numeric(blups_accession$accession)
+
+# Join with phenotype info
+blups_accession$accession <- as.numeric(blups_accession$accession)
+blups_accession_final <- inner_join(blups_accession, phenotype, by = c("accession" = "V2"))
+
+## Remove accessions from Tom's list
+accessions_not_distingquished <- c(6070,1318,5829,1435,1585,6137,6199,6198,6136,9356,9388,9451,5835,6191,9404,6019,5857,6364,8348,5722,1435,5835,6180,5839) # Plus samples that doesnt exisit in the file
+blups_accession_final <- blups_accession_final[!blups_accession_final$accession %in% accessions_not_distingquished, ]
+
+blups_accession_final <- blups_accession_final %>% dplyr::select(V1, sample, V3, V4, V5, BLUP)
+write.table(
+  blups_accession_final,
+  "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/excluded_mismatches/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.filtered.nomismatch.no_heterozygous.fam",
+  row.names = FALSE,
+  quote = FALSE,
+  col.names = FALSE,
+  sep = "\t"
+)
+```
+
+
+
+## Add length information about TEs 
+```{r}
+tes_tair10 <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
+tes_tair10$length <- tes_tair10$Transposon_max_End-tes_tair10$Transposon_min_Start
+## Intersect with long dataframe
+long_df_with_length <- inner_join(long_df,tes_tair10, by=c("TE_id"="Transposon_Name"))
+
+ggplot(long_df_with_length, aes(length,expression))+geom_point()
+
+ggplot(long_df_with_length, aes(x = length)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "black") +
+  theme_bw() +
+  labs(
+    x = "Transposon Length (bp)",
+    y = "Count",
+    title = "Distribution of Transposon Lengths"
+  )
+
+## How many transposons less than 1K length?
+long_df_with_length_1K_filter <- long_df_with_length[long_df_with_length$length<700,]
+str(unique(long_df_with_length_1K_filter$TE_id))
+```
+
+## Calculate heritability 
+```{r}
+# Make sure variables are properly formatted
+library(lme4)
+
+long_df$TE_id <- as.factor(long_df$TE_id)
+long_df$accession <- as.factor(long_df$accession)
+long_df$Replicate <- as.factor(long_df$Replicate)
+
+model <- lmer(expression ~ (1|TE_id) + (1|accession) + (1|TE_id:accession) + (1|Replicate), data = long_df)
+blups_accession <- ranef(model)$accession
+
+# If you want to see the BLUPs
+print(blups_accession)
+## Get variance
+varcomp <- as.data.frame(VarCorr(model))
+var_accession <- varcomp$vcov[varcomp$grp == "accession"]
+var_te_accession <- varcomp$vcov[varcomp$grp == "TE_id:accession"]
+var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+var_te<- varcomp$vcov[varcomp$grp == "TE_id"]
+var_residual <- varcomp$vcov[varcomp$grp == "Residual"]
+# Calculate heritability
+total_variance <-   var_accession+var_replicate+ var_residual +var_te_accession+var_te
+h2 <- var_accession / (total_variance)
+print(h2*100)
+
+# Get proportion explained by each contributer
+prop_accession <- var_accession / total_variance
+prop_replicate <- var_replicate / total_variance
+prop_te<- var_te / total_variance
+prop_te_accession <- var_te_accession / total_variance
+prop_residual <- var_residual / total_variance
+
+
+## Get proportion explained 
+variance_df <- data.frame(
+  Component = c("accession","te:accession","replicate","residual", "te"),
+  Variance = c(prop_accession,prop_te_accession,prop_replicate,prop_residual,prop_te )
+)
+
+# Plot 
+variance_df$Component <- factor(variance_df$Component, 
+                              levels =c("accession","te:accession","replicate","residual", "te"))
+
+ggplot(variance_df, aes(x = Component, y = Variance, fill = Component)) +
+  geom_bar(stat = "identity", width = 0.8, color = "black") +
+  geom_text(aes(label = sprintf("%.1f%%", Variance * 100)),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,size = 3.4)
+
+```
+
+
+## Calculate Heritability on each TE 
+
+```{r}
+# Install and load pbapply if necessary
+# install.packages("pbapply")
+library(pbapply)
+
+library(lme4)
+library(pbapply)  # For progress bar (optional)
+
+# Function to calculate heritability for each TE
+calculate_te_heritability <- function(data) {
+  # Get unique TE_ids
+  te_ids <- unique(data$TE_id)
+  
+  # Initialize results dataframe
+  results <- data.frame(
+    TE_id = character(),
+    heritability = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop through each TE with progress bar
+  results <- do.call(rbind, pblapply(te_ids, function(te) {
+    # Subset data for current TE
+    te_data <- data[data$TE_id == te, ]
+    
+    # Fit mixed model (adjust random effects as needed)
+    model <- lmer(expression ~ 1 + (1|accession) + (1|Replicate), 
+                  data = te_data)
+    
+    # Extract variance components
+    vc <- as.data.frame(VarCorr(model))
+    var_accession <- vc$vcov[vc$grp == "accession"]
+    var_residual <- vc$vcov[vc$grp == "Residual"]
+    
+    # Calculate heritability (H² = Var(Accession) / (Var(Accession) + Var(Residual)))
+    h2 <- var_accession / (var_accession + var_residual)
+    
+    # Return results for this TE
+    data.frame(TE_id = te, heritability = h2)
+  }))
+  
+  return(results)
+}
+
+# Run the function
+heritability_results <- calculate_te_heritability(long_df)
+
+# Plot 
+results <- heritability_results %>%
+  arrange(heritability) %>%  # Arrange in increasing order
+  mutate(TE = factor(TE_id, levels = TE_id))  # Set factor levels to enforce order
+
+ggplot(, aes(x = TE, y = heritability, fill = heritability)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +  
+  labs(title = "Heritability of TEs", x = "TE", y = "Heritability") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank())
+```
+
+
+```{r}
+ranef_results <- ranef(model)
+accession_blups <- ranef_results$accession
+# Get average expression
+long_df2 <- long_df %>% 
+  group_by(accession) %>% 
+  mutate(avg_exp = mean(expression, na.rm = TRUE))
+# Join with blups dataframe
+accession_blups$accession <- rownames(accession_blups)
+colnames(accession_blups) <- c("blups", "accession")
+long_df_with_blups <- inner_join(accession_blups,long_df, by=c("accession"))
+
+ggplot(long_df_with_blups, aes(avg_exp,blups))+geom_point()+xlab("average expression F1 ddm1")+ylab("BLUPs accession F1 ddm1")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+avg_data <- long_df %>%
+  group_by(accession, Replicate) %>%
+  summarize(avg_expression = mean(expression, na.rm = TRUE))
+
+# Fit model
+avg_data_filtered <-avg_data[avg_data$accession!=9805 & avg_data$accession!=9812 & avg_data$accession!=9981 &
+                              avg_data$accession!=108 &avg_data$accession!=9894 &avg_data$accession!=8419, ]
+avg_model <- lmer(avg_expression ~ (1|accession) + (1|Replicate), data = avg_data_filtered)
+
+# Extract variance components
+varcomp <- as.data.frame(VarCorr(model))
+var_accession <- varcomp$vcov[varcomp$grp == "accession"]
+var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+var_residual <- varcomp$vcov[varcomp$grp == "Residual"]
+
+# Calculate heritability
+h2 <- var_accession / (var_accession + var_replicate + var_residual)
+
+
+ranef_results <- ranef(model)
+accession_blups <- ranef_results$cond$accession
+
+# Convert to a data frame with accession names
+blups_df <- data.frame(
+  accession = rownames(accession_blups),
+  BLUP = accession_blups[,1],
+  row.names = NULL
+)
+
+# Sort by BLUP value (descending)
+blups_df <- blups_df[order(-blups_df$BLUP),]
+real_blup <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.filtered.fam")
+# View the results
+blups_df$accession<-as.numeric(blups_df$accession)
+blups_df_joined <- inner_join(blups_df, real_blup,by=c("accession"="V2"))
+ggplot(blups_df_joined, aes(BLUP,V7))
+
+varcomp <- as.data.frame(VarCorr(model))
+var_accession <- varcomp$vcov[varcomp$grp == "accession"]
+var_replicate <- varcomp$vcov[varcomp$grp == "Replicate"]
+var_residual <- varcomp$vcov[varcomp$grp == "Residual"]
+h2 <- var_accession / (var_accession + var_replicate + var_residual)
+print(h2)
+# Extract random effects
+tmb_ranef <- ranef(model_tmb)
+# Extract BLUPs for accessions
+acc_blups <- tmb_ranef$cond$accession[,1]  # Note the different structure
+
+# Create results dataframe
+blup_results <- data.frame(
+  accession = rownames(tmb_ranef$cond$accession),
+  blup = acc_blups
+)
+
+# Calculate mean expression per accession
+accession_means <- aggregate(expression ~ accession, data = long_df, FUN = mean)
+colnames(accession_means)[2] <- "mean_expression"  # Rename for clarity
+
+# Merge BLUPs with mean expression
+blup_results <- merge(blup_results, accession_means, by = "accession")
+
+# Plot BLUPs vs mean expression
+ggplot(blup_results, aes(x = mean_expression, y = blup)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "#B9B4C7") +
+  geom_text(aes(label = accession), vjust = -0.5, size = 3)+
+  labs(
+    title = "BLUPs vs Mean Expression",
+    x = "Mean Expression",
+    y = "BLUP (Random Effect for Accession)",
+    caption = "Each point represents an accession"
+  ) +
+  theme_minimal()
+```
+## Write as output 
+```{r}
+phenotype <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_mean_centered_270acc/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.filtered.fam", sep="\t", header=F)
+phenotype$V2 <- as.numeric(phenotype$V2)
+blup_results$accession <- as.numeric(blup_results$accession)
+blup_results_final <- inner_join(blup_results,phenotype, by=c("accession"="V2"))
+
+blup_results_final_ordered <- blup_results_final %>% dplyr::select(V1,accession,V3,V4,V5,V6,V7,V8,V9,V10,blup)
+
+write.table(blup_results_final_ordered,"/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_removed_outlier_replicates_wt_cross/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.filtered.fam3", row.names = F, col.names = F, sep="\t")
+
+ggplot(blup_results_final_ordered, aes(x = blup, y = V10)) +
+  geom_point() +
+  geom_text(aes(label = accession)) + xlab("BLUPs controls")+ylab("BLUPs ddm1-col0")
+```
+
+## Caluclate heritability based on the average
+```{r}
+accession_means <- aggregate(expression ~ accession + Replicate, data = long_df, FUN = mean)
+
+metainformation <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/metainformtaion_accessions.txt", sep="\t", header=T)
+metainformation <- metainformation %>% dplyr::select(accession.ID,Admixture.Groupe,country)
+accession_means$accession <- as.numeric(accession_means$accession)
+phenotype_sum_with_metainfo <- left_join(accession_means,metainformation, by=c("accession"="accession.ID"))
+
+model <- lmer(expression ~ (1 | accession)+ (1 | Replicate), data = long_df)
+# Pull random effects
+ranef(model)
+summary(model)
+
+residuals <- resid(model)
+
+# Plot histogram of residuals
+hist(residuals, breaks = 30, main = "Histogram of Residuals", xlab = "Residuals", col = "darkgreen")
+
+```
+
+
+```{r}
+var_components <- as.data.frame(VarCorr(model))
+
+# Variance components
+var_sample <- var_components$vcov[var_components$grp == "accession"] # Variance for 'sample'
+#var_planting <- var_components$vcov[var_components$grp == "Planting"]   # Variance for 'replicate'
+var_repl <- var_components$vcov[var_components$grp == "Replicate"]  
+var_residual <-var_residual <- attr(VarCorr(model), "sc")^2
+
+total_variance <- var_sample + var_repl + var_residual
+
+# Calculate heritability
+heritability <- var_sample / (var_sample + var_repl + var_residual)
+cat("Heritability (H^2):", heritability, "\n")
+
+
+
+# Proportion of variance explained by each effect
+prop_sample <- var_sample / total_variance
+prop_replicate <- var_repl / total_variance
+prop_residual <- var_residual / total_variance
+
+# Print the results
+cat("Variance explained by sample: ", prop_sample, "\n")
+cat("Variance explained by replicate: ", prop_replicate, "\n")
+cat("Variance explained by residuals: ", prop_residual, "\n")
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Создаем data frame с результатами
+variance_df <- data.frame(
+  Component = c("Genotype","Sowing", "Replicate","Residuals"),
+  Variance = c(prop_sample,prop_planting,prop_replicate,prop_residual)
+)
+
+# Создаем график
+variance_df$Component <- factor(variance_df$Component, 
+                              levels = c("Genotype","Sowing", "Replicate","Residuals"))
+
+ggplot(variance_df, aes(x = Component, y = Variance, fill = Component)) +
+  geom_bar(stat = "identity", width = 0.6, color = "black") +
+  scale_fill_manual(values = c("Genotype" = "#3A7D44", 
+                               "Sowing"="orange",
+                              "Residuals" = "#2973B2", 
+                              "Replicate" = "#C14600")) +
+  geom_text(aes(label = sprintf("%.1f%%", Variance * 100)),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,size = 8) +
+  labs(
+       y = "Proportion of Variance Explained",
+       x = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16),
+    plot.title = element_text(size = 16, hjust = 0.5)
+  ) +
+  scale_y_continuous(limits = c(0, 1),
+                    labels = scales::percent_format(),
+                    expand = expansion(mult = c(0, 0.1)))
+```
+
+
+# Upload phenotype
+```{r}
+library(data.table)
+phenotype <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_mean_centered_270acc/phenotype.csv", sep="\t", header=F)
+#phenotype$rep1 <- phenotype$V5-phenotype$V2
+#phenotype$rep2 <- phenotype$V6-phenotype$V3
+#phenotype$rep3 <- phenotype$V7-phenotype$V4
+phenotype_sum <- phenotype %>% dplyr::select(V2,V6,V7,V8,V9)
+colnames(phenotype_sum) <- c("sample", "rep1", "rep2", "rep3", "average")
+phenotype_sum[phenotype_sum == "-9"] <- NaN
+phenotype_sum$rep1 <- as.numeric(phenotype_sum$rep1)
+phenotype_sum$rep2 <- as.numeric(phenotype_sum$rep2)
+phenotype_sum$rep3 <- as.numeric(phenotype_sum$rep3)
+phenotype_sum$average <- as.numeric(phenotype_sum$average)
+```
+## Remove samples without at least 2 replicates
+```{r}
+##Exclude samples with two replicates 
+samples_without_two_nas <- phenotype_sum[
+  !((is.na(phenotype_sum$rep1) & is.na(phenotype_sum$rep2) & !is.na(phenotype_sum$rep3)) |
+    (is.na(phenotype_sum$rep1) & !is.na(phenotype_sum$rep2) & is.na(phenotype_sum$rep3)) |
+    (!is.na(phenotype_sum$rep1) & is.na(phenotype_sum$rep2) & is.na(phenotype_sum$rep3))),
+]
+
+excluded_samples <- anti_join(phenotype_sum,samples_without_two_nas, by=("sample"))
+excluded_samples
+```
+
+
+# Upload metainformation about accessions
+```{r}
+metainformation <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/metainformtaion_accessions.txt", sep="\t", header=T)
+metainformation <- metainformation %>% dplyr::select(accession.ID,Admixture.Groupe,country)
+phenotype_sum_with_metainfo <- left_join(samples_without_two_nas,metainformation, by=c("sample"="accession.ID"))
+```
+
+
+```{r}
+df_long <- phenotype_sum_with_metainfo %>%
+  pivot_longer(cols = starts_with("rep"), names_to = "replicate", values_to = "trait_value") 
+
+df_long$replicate <- gsub("rep", "", df_long$replicate)
+df_long$replicate <- as.numeric(df_long$replicate)
+phenotype_sum_with_sample_info <- inner_join(sampleData,df_long, by=c("Accession"="sample","Replicate"="replicate") )
+
+
+phenotype_sum_with_sample_info$Replicate <- as.factor(phenotype_sum_with_sample_info$Replicate)
+phenotype_sum_with_sample_info$Accession <- as.factor(phenotype_sum_with_sample_info$Accession)
+phenotype_sum_with_sample_info$trait_value <- as.numeric(phenotype_sum_with_sample_info$trait_value)
+phenotype_sum_with_sample_info$country <- as.factor(phenotype_sum_with_sample_info$country)
+phenotype_sum_with_sample_info$Planting <- as.factor(phenotype_sum_with_sample_info$Planting)
+#df_long <- df_long[df_long$sample!=7025 & df_long$sample!=424 & df_long$sample!=8419 & df_long$sample!=108 & df_long$sample!=9894 & df_long$sample!=9812  & df_long$sample!=9805,]
+# Fit the linear mixed model
+model <- lmer(trait_value ~ (1 | Accession)+ (1 | Replicate)+ (1|Planting), data = phenotype_sum_with_sample_info)
+# Pull random effects
+ranef(model)
+summary(model)
+
+residuals <- resid(model)
+
+# Plot histogram of residuals
+hist(residuals, breaks = 30, main = "Histogram of Residuals", xlab = "Residuals", col = "darkgreen")
+
+#plot(residuals,df_long$sample)
+#plot(residuals,df_long$replicate)
+```
+
+```{r}
+var_components <- as.data.frame(VarCorr(model))
+
+# Variance components
+var_sample <- var_components$vcov[var_components$grp == "Accession"] # Variance for 'sample'
+var_planting <- var_components$vcov[var_components$grp == "Planting"]   # Variance for 'replicate'
+var_repl <- var_components$vcov[var_components$grp == "Replicate"]  
+var_residual <-var_residual <- attr(VarCorr(model), "sc")^2
+
+total_variance <- var_sample + var_planting+ var_repl + var_residual
+
+# Calculate heritability
+heritability <- var_sample / (var_sample + var_planting+ var_repl + var_residual)
+cat("Heritability (H^2):", heritability, "\n")
+
+
+
+# Proportion of variance explained by each effect
+prop_sample <- var_sample / total_variance
+prop_planting <- var_planting / total_variance
+prop_replicate <- var_repl / total_variance
+prop_residual <- var_residual / total_variance
+
+# Print the results
+cat("Variance explained by sample: ", prop_sample, "\n")
+cat("Variance explained by planting: ", prop_planting, "\n")
+cat("Variance explained by replicate: ", prop_replicate, "\n")
+cat("Variance explained by residuals: ", prop_residual, "\n")
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Создаем data frame с результатами
+variance_df <- data.frame(
+  Component = c("Genotype","Sowing", "Replicate","Residuals"),
+  Variance = c(prop_sample,prop_planting,prop_replicate,prop_residual)
+)
+
+# Создаем график
+variance_df$Component <- factor(variance_df$Component, 
+                              levels = c("Genotype","Sowing", "Replicate","Residuals"))
+
+ggplot(variance_df, aes(x = Component, y = Variance, fill = Component)) +
+  geom_bar(stat = "identity", width = 0.6, color = "black") +
+  scale_fill_manual(values = c("Genotype" = "#3A7D44", 
+                               "Sowing"="orange",
+                              "Residuals" = "#2973B2", 
+                              "Replicate" = "#C14600")) +
+  geom_text(aes(label = sprintf("%.1f%%", Variance * 100)),
+            position = position_dodge(width = 0.9),
+            vjust = -0.5,size = 8) +
+  labs(
+       y = "Proportion of Variance Explained",
+       x = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16),
+    plot.title = element_text(size = 16, hjust = 0.5)
+  ) +
+  scale_y_continuous(limits = c(0, 1),
+                    labels = scales::percent_format(),
+                    expand = expansion(mult = c(0, 0.1)))
+```
+#### Calculateing BLUPs
+```{r}
+blups <- ranef(model)
+blups_df <- data.frame(
+  BLUP = blups$Accession
+)
+colnames(blups_df) <- "BLUP"
+blups_df$sample <- rownames(blups_df)
+
+
+## Write a df
+blups_df$sample <- as.numeric(blups_df$sample)
+blup_phenotype <- inner_join(samples_without_two_nas, blups_df,by = c("sample"="sample"))
+
+## Write as an output
+blup_phenotype$BLUP <- round(blup_phenotype$BLUP,3)
+blup_phenotype$v1 <- 0
+blup_phenotype$v2 <- 0
+blup_phenotype$v3 <- 0
+blup_phenotype$v4 <- 0
+
+## Remove outliers
+phenotype_outliers <- phenotype_sum[phenotype_sum$sample=="8419" | phenotype_sum$sample=="9894" |  phenotype_sum$sample=="108" |  phenotype_sum$sample=="9981"|  phenotype_sum$sample=="9981"|  phenotype_sum$sample=="9805", ]
+
+blup_phenotype <- blup_phenotype %>%
+  dplyr::select(v1,sample,v2,v3,v4, rep1, rep2, rep3,average,BLUP)
+
+blup_phenotype_wo_outliers <- blup_phenotype[blup_phenotype$sample!="8419" & blup_phenotype$sample!="9894" &  blup_phenotype$sample!="108" &  blup_phenotype$sample!="9981"&  blup_phenotype$sample!="9981"&  blup_phenotype$sample!="9805", ]
+
+
+write.table(blup_phenotype, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap_mean_centered_270acc/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam2", quote = F, row.names = F, col.names = F, sep="\t")
+
+means_df <- df_long %>%
+  group_by(sample) %>%
+  dplyr::summarize(Mean = mean(trait_value, na.rm = TRUE))
+
+# Combine BLUPs and means
+means_df$sample <- as.numeric(as.character(means_df$sample))
+blups_df$sample <- as.numeric(blups_df$sample)
+results <- inner_join(means_df, blups_df, by="sample")
+
+# Create visualization
+
+
+ggplot(results, aes(x = Mean, y = BLUP)) +
+    geom_point(color = "#2E86C1", alpha = 0.6, size = 3) +  # Blue points
+    geom_text(aes(label = sample), vjust = -0.5, size = 3) +  # Add sample names
+    geom_abline(linetype = "dashed", color = "#E74C3C") +   # Red dashed line
+    theme_bw() +
+    labs(
+        title = "Relationship between Mean Values and BLUPs",
+        x = "Mean of Replicates",
+        y = "BLUP Values"
+    ) +
+    theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 10)
+    )
+```
+## BLUPs outlier accessions 
+```{r}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Reshape data from wide to long format
+blup_long <- blup_phenotype %>%
+  pivot_longer(cols = c(rep1, rep2, rep3, average, BLUP), names_to = "Trait", values_to = "trait_value")
+
+# Plot
+ggplot(blup_long, aes(
+  y = as.factor(sample),  # Assuming V2 is Accession
+  x = trait_value, 
+  color = as.factor(Trait)  # Different colors for V6, V7, V8, BLUP
+)) +
+  geom_point(size = 2) + 
+  theme_minimal(base_size = 13) +
+  xlab("Expression F1 ddm1 - F1 Col") +
+  ylab("Accession") +
+  scale_color_manual(values = c("red", "blue", "green","orange", "purple"))  # Custom colors
+
+## Select problematic accessions 
+
+blup_long$outlier <- ifelse(
+  blup_long$sample %in% c("7025", "8419", "108", "9894", "9812", "9805"), 
+  "outlier", 
+  "no"
+)
+
+blup_long_outlier <-blup_long[blup_long$outlier=="outlier",]
+
+ggplot(blup_long_outlier, aes(
+  y = as.factor(sample),  # Assuming V2 is Accession
+  x = trait_value, 
+  color = as.factor(Trait)  # Different colors for V6, V7, V8, BLUP
+)) +
+  geom_point(size = 2) + 
+  theme_minimal(base_size = 13) +
+  xlab("Expression F1 ddm1 - F1 Col") +
+  ylab("Accession") +
+  scale_color_manual(values = c("red", "blue", "green","orange", "purple"))  # Custom colors
+
+## Histogram of the BLUPs 
+ggplot(blup_long,aes(x=trait_value) )+geom_histogram()+facet_wrap(~Trait)
+```
+
+## Correct outliers
+
+```{r}
+results$sample <- as.numeric(results$sample)
+metainformation$accession.ID <- as.numeric(metainformation$accession.ID)
+results_with_metainfo <- inner_join(results, metainformation, by=c("sample"="accession.ID"))
+
+## Add number of differentially expressed TEs 
+diff_expressed_tes <-  read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/accession_specific_effect/number_of_expressed_tes.csv", header=T, sep=",")
+
+results_with_metainfo_number_of_tes <- inner_join(results_with_metainfo,diff_expressed_tes, by=c("sample"="Accession") )
+
+ggplot(results_with_metainfo_number_of_tes, aes(BLUP, n_of_tes)) + geom_point()+geom_text(aes(label = sample), vjust = -0.5, size = 3)
+```
+
+## Join with sample data 
+```{r}
+phenotype_outliers_long$replicate <- gsub("rep","", phenotype_outliers_long$replicate) 
+sampleData$Replicate <- as.numeric(sampleData$Replicate)
+phenotype_outliers_long$replicate <- as.numeric(phenotype_outliers_long$replicate)
+
+df_long$replicate <- gsub("rep","", df_long$replicate) 
+df_long$replicate <- as.numeric(df_long$replicate)
+
+phenotype_sum_with_sample_info <- inner_join(sampleData,phenotype_outliers_long, by=c("Accession"="sample","Replicate"="replicate") )
+
+phenotype_sum_with_sample_info_all_samples <- inner_join(sampleData,df_long, by=c("Accession"="sample","Replicate"="replicate"))
+```
+## Check clustering based on the plate position
+```{r}
+ggplot(phenotype_sum_with_sample_info, aes(
+    y = as.factor(Accession), 
+    x = trait_value, 
+    color = as.factor(Sequencing.date )  # Map color to replicate INSIDE aes()
+  )) +
+  geom_point(size = 2) + 
+  theme_minimal(base_size = 13)+xlab("expression F1 ddm1- F1 Col")+ylab("accession")
+
+```
+## Remove outling accessions 
+```{r}
+results <- results[results$sample!=7025 & results$sample!=424 &results$sample!=8419 &results$sample!=108 &results$sample!=9894 & results$sample!=9812  & results$sample!=9805,]
+
+ggplot(results, aes(x = Mean, y = BLUP)) +
+    geom_point(color = "#2E86C1", alpha = 0.6, size = 3) +  # Blue points
+    geom_text(aes(label = sample), vjust = -0.5, size = 3) +  # Add sample names
+    geom_abline(linetype = "dashed", color = "#E74C3C") +   # Red dashed line
+    theme_bw() +
+    labs(
+        title = "Relationship between Mean Values and BLUPs after outliers removal",
+        x = "Mean of Replicates",
+        y = "BLUP Values"
+    ) +
+    theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 10)
+    )
+
+
+blups <- ranef(model)
+blups_df <- data.frame(
+  BLUP = blups$sample
+)
+colnames(blups_df) <- "BLUP"
+blups_df$sample <- rownames(blups_df)
+
+## Write a df
+blups_df$sample <- as.numeric(blups_df$sample)
+blup_phenotype <- inner_join(phenotype, blups_df,by = c("V2"="sample"))
+
+## Write as an output
+blup_phenotype$BLUP <- round(blup_phenotype$BLUP,3)
+blup_phenotype <-blup_phenotype[blup_phenotype$V2!=7025 & blup_phenotype$V2!=424 &blup_phenotype$V2!=8419 &blup_phenotype$V2!=108 &blup_phenotype$V2!=9894 & blup_phenotype$V2!=9812  & blup_phenotype$V2!=9805,]
+write.table(blup_phenotype, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam2_corr", quote = F, row.names = F, col.names = F, sep="\t")
+
+```
+
+
+```{r}
+ggplot(blup_phenotype, aes(BLUP)) +
+  geom_histogram(fill = "#3498DB", color = "#2C3E50", alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Density Plot of BLUP Values",
+    x = "BLUP",
+    y = "Density"
+  )
+
+```
+
+### Narrow sense heritability
+```{r}
+# Load data
+snps_heritability = read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/exploring_association/joined_chr4_assoc_tabbed.txt", header=F, sep="\t")
+snps_heritability_sample <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/exploring_association/chr4_assoc_5434263_covar.txt", header=F, sep="\t")
+snps_heritability_sample <- snps_heritability_sample %>% select(V1)
+
+snps_heritability2 <- cbind(snps_heritability_sample,snps_heritability)
+
+colnames(snps_heritability2) <- make.unique(colnames(snps_heritability2))
+head(snps_heritability2)
+snps_heritability2$V1.1 <- NULL
+## Add phenotype 
+phenotype <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected_acc.fam", header=F, sep="\t")
+phenotype <- phenotype %>% select(V2,V10)
+snps_heritability2$V1 <- as.numeric(snps_heritability2$V1)
+phenotype$V2 <- as.numeric(phenotype$V2)
+
+
+
+snps_heritability_with_phenotype <- inner_join(snps_heritability2,phenotype, by=c("V1"="V2"))
+
+```
+
+##Load kinship
+```{r}
+# Load the kinship matrix
+kinship <- as.matrix(read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/kinship_for_heritability/kinship_matrix.rel", header = F))
+
+ids <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/limma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_ddm_minus_col_average_per_replicate_union_set_filtered_te_gene_overlap/kinship_for_heritability/kinship_matrix.rel.id", sep='\t')
+individual_ids <- as.character(ids$V2)
+# Check the dimensions
+rownames(kinship) <- individual_ids
+colnames(kinship) <- individual_ids
+```
+
+
+```{r}
+# Construct the formula: random effect for each SNP
+snps_heritability_with_phenotype$V10 <- as.numeric(snps_heritability_with_phenotype$V10)
+snp_formula <- paste("V10 ~ (1|", paste(colnames(snps_heritability_with_phenotype)[2:9], collapse = ") + (1|"), ")", sep = "")
+# Fit the mixed model
+model <- lmer(as.formula(snp_formula), data = snps_heritability_with_phenotype)
+# Summary of the model
+summary(model)
+```
+
+
+
+```{r}
+# Extract variance components
+var_comp <- as.data.frame(VarCorr(model))
+
+# Calculate genetic variance (sum of random effect variances)
+genetic_variance <- sum(var_comp$vcov)
+
+# Residual variance
+residual_variance <- attr(VarCorr(model), "sc")^2
+
+# Narrow-sense heritability
+h2 <- genetic_variance / (genetic_variance + residual_variance)
+cat("Narrow-sense heritability (h2):", h2, "\n")
+
+```
+
+
+
+## Make a plot of outliing samples 
+```{r}
+df_long <- phenotype_sum %>%
+  pivot_longer(cols = starts_with("rep"), names_to = "replicate", values_to = "trait_value")
+
+
+
+phenotype_outliers <- phenotype_sum[phenotype_sum$sample=="8419" | phenotype_sum$sample=="9894" |  phenotype_sum$sample=="108" |  phenotype_sum$sample=="9981"|  phenotype_sum$sample=="9981"|  phenotype_sum$sample=="9805", ]
+
+phenotype_outliers_long <- phenotype_outliers %>%
+  pivot_longer(cols = starts_with("rep"), names_to = "replicate", values_to = "trait_value")
+
+phenotype_outliers_long$replicate <- as.factor(phenotype_outliers_long$replicate)
+
+
+df_long$outlier <- ifelse(
+  df_long$sample %in% c("8419", "9894", "108", "9981", "9981", "9805"), 
+  "outlier", 
+  "no"
+)
+
+df_long_outlier <-df_long[df_long$outlier=="outlier",]
+df_long$sample <- as.numeric(df_long$sample)
+
+ggplot(df_long, aes(
+    y = as.factor(sample), 
+    x = trait_value, 
+    color = outlier  # Map color to replicate INSIDE aes()
+  )) +
+  geom_point(size = 4) + 
+  theme_minimal(base_size = 15)+xlab("expression F1 Col0- F1 ddm1")+ylab("accession")
+
+
+```
+
+## Heritability for single TE
+```{r}
+# Load data
+sampleData = read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/filtered_data_wo_misclustered_2_repl.txt", header=T)
+```
+# Upload phenotype
+```{r}
+library(data.table)
+voom_normalized_values <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/common_effect/expression_salmon_limma_normilized_tes_signif_padj001_log2fc1_common_effect_wo_controls.csv", header=T, sep=",")
+
+cmt2 <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/te_filtering_overlap/filtered_atleast1bp_overalp_with_gene_id_list.csv", header=T, sep=",")
+targets <- voom_normalized_values$X %in% cmt2$x
+
+voom_normalized_values <- voom_normalized_values[!targets,]
+rownames(voom_normalized_values) <- voom_normalized_values$X
+voom_normalized_values$X<-NULL
+# Transpose
+voom_normalized_values <- as.data.frame(t(voom_normalized_values))
+voom_normalized_values$sample <- rownames(voom_normalized_values) 
+voom_normalized_values$Accession <- gsub(".*Col_([0-9]+)_.*", "\\1", voom_normalized_values$sample)
+voom_normalized_values$Accession <- gsub(".*ddm1_([0-9]+)_.*", "\\1", voom_normalized_values$Accession)
+# Extract DDM1 or Col
+voom_normalized_values$Variant <- gsub(".*_(Col|ddm1)_.*", "\\1",voom_normalized_values$sample)
+# Remove ddm1 itself
+#patterns_to_remove <- c("ddm1_ct")
+
+# Filter out columns where names start with any of the specified patterns
+#columns_to_keep <- grep(paste0("^", patterns_to_remove, collapse = "|"), colnames(voom_normalized_values), invert = TRUE, value = TRUE)
+
+# Keep only the desired columns
+#voom_normalized_values <- voom_normalized_values[, columns_to_keep]
+
+voom_normalized_values$Replicate <-as.factor(gsub(".*_([0-9]+)_.*", "\\1", voom_normalized_values$sample))
+# Make mean of the samples with replicates 
+
+#voom_normalized_values$Replicate_clean <- sub("\\..*", "", voom_normalized_values$Replicate)
+
+#main_reps <- voom_normalized_values %>% filter(Replicate_clean %in% c(1, 2, 3))
+#other_reps <- voom_normalized_values %>% filter(!Replicate_clean %in% c(1, 2, 3))
+
+#other_reps_summarized <- other_reps %>%
+#  group_by(Replicate_clean) %>%
+#  dplyr::summarise(across(where(is.numeric), mean, na.rm = TRUE)) %>%
+#  mutate(
+#    Replicate = str_extract(Replicate_clean, ".*(?=_)"),  # Everything before last "_"
+#  )
+
+#other_reps_summarized$Accession <- gsub(".*_([0-9]+)_.*", "\\1", other_reps_summarized$Replicate_clean )
+#other_reps_summarized$Variant <- gsub(".*_([0-9]+)_.*", "\\1", other_reps_summarized$Replicate_clean )
+# Combine two df
+#all_repl_cleaned <- rbind(main_reps,other_reps)
+#all_repl_cleaned$Replicate_clean<-NULL
+#all_repl_cleaned$sample <- NULL
+```
+
+
+```{r}
+# Install and load pbapply if necessary
+# install.packages("pbapply")
+library(pbapply)
+
+voom_normalized_values$sample <- NULL
+voom_normalized_values$Replicate_clean<- NULL
+calculate_te_heritability <- function(data) {
+  # Get all columns except last 3 (these are the TEs)
+  te_cols <- colnames(data)[1:(ncol(data)-3)]
+  
+  # Create empty data frame for results
+  results <- data.frame(
+    TE = character(),
+    heritability = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop through each TE with progress bar
+  results <- pblapply(te_cols, function(te) {
+    # Create subset with current TE and the last 3 columns
+    subset_data <- data[, c(te, tail(colnames(data), 3))]
+    colnames(subset_data)[1] <- "expression"
+    
+    # Fit model
+    model <- lmer(expression ~ (1|Variant) + (1|Accession) + (1|Replicate), 
+                  data = subset_data)
+    
+    # Get variance components
+    var_components <- as.data.frame(VarCorr(model))
+    
+    # Calculate heritability
+    var_accession <- var_components$vcov[var_components$grp == "Accession"] 
+    var_replicate <- var_components$vcov[var_components$grp == "Replicate"] 
+    var_variant <- var_components$vcov[var_components$grp == "Variant"] 
+    var_residuals <- attr(VarCorr(model), "sc")^2 
+    total_var <- var_accession + var_replicate + var_variant + var_residuals
+    heritability <- var_accession / total_var
+    
+    # Return results
+    data.frame(TE = te, heritability = heritability)
+  })
+  
+  # Convert the list of results to a data frame
+  results <- do.call(rbind, results)
+  
+  return(results)
+}
+
+results <- calculate_te_heritability(voom_normalized_values)
+head(results)
+
+# Plot 
+results <- results %>%
+  arrange(heritability) %>%  # Arrange in increasing order
+  mutate(TE = factor(TE, levels = TE))  # Set factor levels to enforce order
+
+ggplot(results, aes(x = TE, y = heritability, fill = heritability)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +  
+  labs(title = "Heritability of TEs", x = "TE", y = "Heritability") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank())
+
+
+ggplot(results, aes(heritability)) +
+  geom_histogram()+theme_bw(base_size = 15)
+
+#Filter results
+
+results <- results[results$heritability>0.2,]
+str(results[results$heritability>0.5,])
+hist(results$heritability)
+
+rownames(results) <- results$TE
+results$TE<-rownames(results) 
+
+## Add TE names
+te_annot <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/tes_annotation_with_superfamily.csv", sep=",")
+# Filter out rows where Super.Family is NA or starts with "NA"
+te_annot <- te_annot[!is.na(te_annot$Super.Family) & !grepl("^NA", te_annot$Super.Family), ]
+
+# Filter out rows where Name starts with a space or is missing
+te_annot <- te_annot[!grepl("^\\s", te_annot$Super.Family) & te_annot$Super.Family != "" & !is.na(te_annot$Super.Family), ]
+
+results_with_family <- inner_join(te_annot, results, by=c("Name"="TE"))
+
+# Create the heatmap
+ggplot(results_with_family, aes(x = reorder(Name, heritability), y = heritability, fill = heritability)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Flip the axes to make the TEs easier to read
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +  # Color gradient based on heritability
+  labs(title = "Heritability of TEs", x = "TE", y = "Heritability") +
+  theme_minimal()+ theme(axis.text.y = element_text(size = 11)) 
+
+# Arrange heritability in descending order within each family
+results_with_family <- results_with_family %>%
+  group_by(Super.Family) %>%
+  arrange(-desc(heritability), .by_group = TRUE) %>%  
+  ungroup()
+
+# Create a factor for TE names to order them within each Super.Family
+results_with_family <- results_with_family %>%
+  mutate(Name = factor(Name, levels = Name))
+
+family_counts <- results_with_family %>%
+  count(Super.Family) %>%
+  arrange(n)
+
+# Reorder Super.Family factor levels based on counts
+results_with_family <- results_with_family %>%
+  mutate(Super.Family = factor(Super.Family, levels = family_counts$Super.Family))
+
+results_with_family <- results_with_family[results_with_family$Super.Family!='<NA>',]
+# Create the heatmap
+ggplot(results, aes(x = TE, y = heritability, fill = heritability)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Flip the axes
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +  # Color gradient
+  labs(title = "Heritability of TEs", x = "TE", y = "Heritability") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 15))
+```
+
+```{r}
+results_with_family_filtered <-results_with_family[results_with_family$heritability>0.5,]
+results_with_family_filtered %>% group_by(Super.Family) %>% mutate(n=n())
+```
+
+
+
+

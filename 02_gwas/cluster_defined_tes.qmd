@@ -1,0 +1,113 @@
+---
+title: "cluster_defined_tes"
+format: pdf
+editor: visual
+---
+
+```{r}
+long_data_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_long_data.csv")
+
+long_data_anti_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sense_long_data.csv")
+sequencing_date <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/10_metadata/ddm1_crosses_metadata_2repl_filtered_num_reads_mapping_rate_filtered_outliers_by_pca.txt", header=T, sep=",") %>% select(Sample_id,Sequencing_date)
+
+## Combine data
+library(dplyr)
+# Remove _AS suffix 
+long_data_anti_sense <- long_data_anti_sense %>%
+  mutate(TE = gsub("_AS$", "", TE))
+# TEs unique to each
+sense_only_TEs <- setdiff(long_data_sense$TE, long_data_anti_sense$TE)
+anti_only_TEs  <- setdiff(long_data_anti_sense$TE, long_data_sense$TE)
+# Filter and combine
+long_data_combined <- bind_rows(
+  long_data_sense %>% filter(TE %in% sense_only_TEs),
+  long_data_anti_sense %>% filter(TE %in% anti_only_TEs)
+)
+```
+
+Cluster log2 transposon expression
+
+```{r}
+te_annotation <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
+```
+
+```{r}
+library(pheatmap)
+library(ComplexHeatmap)
+library(circlize)
+# Prepare matrix with TEs as rows, accessions as columns
+heatmap_data_log2 <- long_data_combined %>%
+  dplyr::select(sample_id, TE, expression_value) %>%
+  pivot_wider(names_from = sample_id, values_from = expression_value) %>%  # Switch here
+  column_to_rownames("TE") %>%
+  as.matrix()
+
+heatmap_data_log2_family <- left_join(long_data_combined,te_annotation, by=c("TE"="Transposon_Name"))
+
+# Prepare row annotation (TE superfamily)
+te_annotation <- heatmap_data_log2_family %>%
+  distinct(TE, Transposon_Super_Family) %>%
+  arrange(TE)
+# Row annotation. Define colors 
+superfamily_colors <- c(
+  "#E41A1C",  
+  "#377EB8",  
+  "#4DAF4A", 
+  "#984EA3",  
+  "#FF7F00",  
+  "#FFFF33",  
+  "#A65628", 
+  "#F781BF",  
+  "#999999",  
+  "#66C2A5", 
+  "#5C5470", 
+  "#0AC4E0"
+)
+
+# Get unique superfamilies
+unique_superfamilies <- unique(te_annotation$Transposon_Super_Family)
+
+# Create named color vector
+superfamily_col <- setNames(superfamily_colors[1:length(unique_superfamilies)], 
+                            unique_superfamilies)
+
+# Row annotation with custom colors
+row_ha <- rowAnnotation(
+  Superfamily = te_annotation$Transposon_Super_Family,
+  col = list(Superfamily = superfamily_col)
+)
+
+
+# Plot
+ht <- Heatmap(log2(heatmap_data_log2+1),
+        name = "log2 expression",
+        right_annotation = row_ha,
+        cluster_rows = TRUE,
+        cluster_columns = TRUE,
+        show_row_names = FALSE,
+        show_column_names = FALSE,
+        row_km = 3,
+        row_km_repeats = 1000,
+        column_km_repeats = 1000,
+        column_km = 2,
+        row_names_gp = gpar(fontsize = 8),
+        column_title = "TE expression log2 scaled",
+        row_title = "TEs")
+
+draw(ht)
+
+# Extract TE clusters
+ht_draw <- draw(ht)
+row_clusters <- row_order(ht_draw)
+```
+
+Create TE list attributed to the different clusters
+
+```{r}
+# Get cluster assignment for TEs
+te_cluster_assignment <- data.frame(
+  TE = rownames(heatmap_data_log2),
+  cluster = rep(1:3, times = sapply(row_clusters, length))[order(unlist(row_clusters))]
+)
+write.csv2(te_cluster_assignment,"/groups/nordborg/projects/ddm1_resilencing/04_output/cluters_te_expression.csv", quote = F, row.names = F)
+```

@@ -1,0 +1,1648 @@
+---
+title: "009_gemma_ind_tes"
+output: html_document
+date: "2025-04-25"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(metap)
+library(dplyr)
+
+```
+
+```{r}
+individual_tes_gwas <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/mat_expressed_ind_tes/output/combined_ddm1_minus_col_maf00520251020.txt")
+
+# Select pwald columns
+p_wald_cols <- grep("^p_wald_", names(individual_tes_gwas), value = TRUE)
+individual_tes_gwas[, (p_wald_cols) := lapply(.SD, as.numeric), .SDcols = p_wald_cols]
+long_individual_tes_gwas <- melt(
+  individual_tes_gwas,
+  id.vars = c("chr", "ps", "af"),
+  variable.name = "TE",
+  value.name = "p_wald"
+)
+
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+## Heritability for individual TE
+#heritability <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/heritability_ind_te.csv")
+## Remove NA pwald
+long_individual_tes_gwas <- long_individual_tes_gwas %>%
+  filter(!is.na(p_wald))
+
+long_individual_tes_gwas$TE <- gsub("p_wald_", "",long_individual_tes_gwas$TE)
+
+## Add heritability to the columns 
+#heritability <- as.data.frame(heritability)
+#heritability_ddm1 <- heritability[heritability$genotype=="ddm1",]
+
+heritability_ddm1 <- heritability_ddm1 %>% select(Transposon_Name, heritability,Transposon_Super_Family,Transposon_Family,Transposon_min_Start,Transposon_max_End)
+heritability_ddm1 <- unique(heritability_ddm1)
+long_individual_tes_gwas_with_heritability <- left_join(long_individual_tes_gwas,heritability_ddm1, by=c("TE"="Transposon_Name"))
+```
+##Make a heatmap 
+```{r}
+long_individual_tes_gwas_with_heritability_LTR <- long_individual_tes_gwas_with_heritability[long_individual_tes_gwas_with_heritability$tra=="VANDAL11",]
+
+
+long_individual_tes_gwas_filtered <- long_individual_tes_gwas[-log10(long_individual_tes_gwas$p_wald)>4,]
+
+ggplot(long_individual_tes_gwas_filtered,
+       aes(x = ps/1e6, y = TE, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 0.6) +
+  scale_color_gradient(low = "#7F8CAA", high = "red",
+                       limits = c(4, 15), oob = scales::squish,
+                       name = "-log10(P)") +
+  labs(x = "Position (Mbp)", y = "TE position") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+long_individual_tes_gwas_with_heritability_filtered <- long_individual_tes_gwas_with_heritability[-log10(long_individual_tes_gwas_with_heritability$p_wald)>4,]
+
+
+ggplot(long_individual_tes_gwas_with_heritability_filtered,
+       aes(x = ps/1e6, y = Transposon_min_Start/1e6, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 0.6) +
+  scale_color_gradient2(
+    low = "#FAF0E6",
+    mid = "#B9B4C7",
+    high = "red",
+    midpoint = 5,
+    limits = c(4, 12),
+    oob = scales::squish
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 3),
+    strip.background = element_blank()
+  )+
+  scale_y_discrete() +  # Changed from scale_y_continuous
+  labs(x = "Position (Mbp)", y = "TE")+
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1))+facet_wrap(~chr, ncol=5)
+
+```
+
+## Cumulative position
+```{r}
+library(dplyr)
+
+long_individual_tes_gwas_filtered <- long_individual_tes_gwas[-log10(long_individual_tes_gwas$p_wald)>3,]
+
+# Simple cumulative position calculation
+long_individual_tes_gwas_filtered <- long_individual_tes_gwas_filtered %>%
+  arrange(chr, ps) %>%
+  group_by(chr) %>%
+  mutate(chr_len = max(ps)) %>%
+  ungroup() %>%
+  mutate(chr_offset = c(0, cumsum(unique(chr_len))[-length(unique(chr_len))])[chr]) %>%
+  mutate(ps_cum = ps + chr_offset)
+
+# Convert TE to numeric for tight spacing
+long_individual_tes_gwas_filtered <- long_individual_tes_gwas_filtered %>%
+  mutate(TE_num = as.numeric(factor(TE)))
+
+# Calculate chromosome centers for x-axis labels
+chr_axis <- long_individual_tes_gwas_filtered %>%
+  group_by(chr) %>%
+  summarize(center = mean(ps_cum))
+
+ggplot(long_individual_tes_gwas_filtered,
+       aes(x = ps_cum/1e6, y = TE_num, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 4, shape = 15) +
+ scale_color_gradient2(low = "#FAF8F1", mid = "#A9B5DF", high = "#2D336B",
+                      midpoint = 6,
+                      limits = c(3, 10), oob = scales::squish,
+                      name = "-log10(P)") +
+  scale_x_continuous(breaks = chr_axis$center/1e6, 
+                     labels = chr_axis$chr) +
+  scale_y_continuous(expand = c(0, 0.5)) +
+  labs(x = "Chromosome", y = "TE position") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+
+## Join with tes
+long_individual_tes_gwas_filtered_with_info <- inner_join(long_individual_tes_gwas_filtered, te_annotation, by=c("TE"="Transposon_Name"))
+```
+
+```{r}
+
+
+long_individual_tes_gwas_filtered_with_info <- long_individual_tes_gwas_filtered_with_info %>%
+  arrange(chr, Transposon_min_Start, ps) %>%
+  mutate(TE_num = as.numeric(factor(TE, levels = unique(TE))))
+
+# Recalculate chromosome centers
+chr_axis <- long_individual_tes_gwas_filtered_with_info %>%
+  group_by(chr) %>%
+  summarize(center = mean(ps_cum))
+
+# Plot
+long_individual_tes_gwas_filtered_with_info_gypsy <-long_individual_tes_gwas_filtered_with_info[long_individual_tes_gwas_filtered_with_info$Transposon_Super_Family=="LTR/Gypsy",]
+ggplot(long_individual_tes_gwas_filtered_with_info,
+       aes(x = ps_cum/1e6, y = TE_num, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 4, shape = 15) +
+ scale_color_gradient2(low = "#EEEDED", mid = "#CDDEFF", high = "#161D6F",
+                      midpoint = 6,
+                      limits = c(3, 10), oob = scales::squish,
+                      name = "-log10(P)") +
+  scale_x_continuous(breaks = chr_axis$center/1e6, 
+                     labels = chr_axis$chr) +
+  scale_y_continuous(expand = c(0, 0.5)) +
+  labs(x = "Chromosome", y = "TE position") +
+  theme_minimal(base_size = 18) +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+```
+
+
+```{r}
+# Option 1: Cluster by maximum p-value instead of median
+te_order <- long_individual_tes_gwas_with_heritability_filtered %>%
+  group_by(TE) %>%
+  summarise(max_pval = max(-log10(p_wald), na.rm = TRUE)) %>%
+  arrange(desc(max_pval)) %>%
+  pull(TE)
+
+# Option 2: Cluster by mean p-value
+te_order <- long_individual_tes_gwas_with_heritability_filtered %>%
+  group_by(TE) %>%
+  summarise(mean_pval = mean(-log10(p_wald), na.rm = TRUE)) %>%
+  arrange(desc(mean_pval)) %>%
+  pull(TE)
+
+# Option 3: Hierarchical clustering based on p-value patterns across chromosomes
+library(cluster)
+te_matrix <- long_individual_tes_gwas_with_heritability_filtered %>%
+  select(TE, chr, p_wald) %>%
+  group_by(TE, chr) %>%
+  summarise(mean_pval = mean(-log10(p_wald), na.rm = TRUE)) %>%
+  pivot_wider(names_from = chr, values_from = mean_pval, values_fill = 0) %>%
+  column_to_rownames("TE")
+
+hc <- hclust(dist(te_matrix))
+te_order <- rownames(te_matrix)[hc$order]
+
+
+
+# Apply the hierarchical clustering order to your data
+long_individual_tes_gwas_with_heritability_filtered$TE <- 
+  factor(long_individual_tes_gwas_with_heritability_filtered$TE, 
+         levels = te_order)
+
+# Your original plot with clustered TE order
+ggplot(long_individual_tes_gwas_with_heritability_filtered,
+       aes(x = ps/1e6, y = TE, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 0.6) +
+  scale_color_gradient2(
+    low = "#FAF0E6",
+    mid = "#B9B4C7", 
+    high = "red",
+    midpoint = 5,
+    limits = c(4, 12),
+    oob = scales::squish,
+    name = "-log10(P)"
+  ) +
+  scale_y_discrete() +
+  labs(x = "Position (Mbp)", y = "TE (Hierarchically Clustered)") +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 3),
+    panel.spacing = unit(0, "lines"),
+    strip.background = element_blank()
+  )
+
+## Join wtiht TE
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+long_individual_tes_gwas_with_heritability_filtered_with_te_info <- inner_join(long_individual_tes_gwas_with_heritability_filtered,te_annotation,by=c("TE"="Transposon_Name"))
+```
+
+
+```{r}
+library(forcats)
+# Create ordered factor for TE based on chromosome and position
+long_individual_tes_gwas_with_heritability_filtered <- long_individual_tes_gwas_with_heritability_filtered %>%
+  mutate(TE = fct_reorder2(TE, chr, Transposon_min_Start))
+
+# Plot
+ggplot(long_individual_tes_gwas_filtered,
+       aes(x = ps_cum/1e6, y = TE_num, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 4, shape = 15) +
+ scale_color_gradient2(low = "#FAF8F1", mid = "#A9B5DF", high = "#2D336B",
+                      midpoint = 6,
+                      limits = c(3, 10), oob = scales::squish,
+                      name = "-log10(P)") +
+  scale_x_continuous(breaks = chr_axis$center/1e6, 
+                     labels = chr_axis$chr) +
+  scale_y_continuous(expand = c(0, 0.5)) +
+  labs(x = "Chromosome", y = "TE position") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+```
+
+
+
+### OLD
+#Order transposons 
+long_individual_tes_gwas$TE <- gsub("p_wald_", "", long_individual_tes_gwas$TE)
+sig_peaks_ann <- right_join(te_annotation,long_individual_tes_gwas, by=c("Transposon_Name"="TE"))
+## Filter out short TEs 
+sig_peaks_ann$length <- sig_peaks_ann$Transposon_max_End-sig_peaks_ann$Transposon_min_Start
+sig_peaks_ann_filtered <- sig_peaks_ann[sig_peaks_ann$length>1000,]
+
+# Option 1: Filter NAs within summarise
+library(dplyr)
+library(metap)
+
+fisher_results <- long_individual_tes_gwas %>%
+  group_by(chr, ps) %>%
+  summarise(
+    fisher_combined_p = {
+      valid_p <- p_wald[!is.na(p_wald) & p_wald > 0 & p_wald <= 1]
+      if (length(valid_p) > 0) {
+        sumlog(valid_p)$p
+      } else {
+        NA_real_
+      }
+    },
+    n_TEs = sum(!is.na(p_wald)),
+    .groups = "drop"
+  )
+
+
+```
+## Make a trans-acting peak
+```{r}
+sig_peaks_ann_filtered <-sig_peaks_ann[-log10(sig_peaks_ann$p_wald)>4,]
+
+
+```
+
+
+### Visialize result 
+```{r}
+library(ggplot2)
+#snps_of_interest_indices <- fisher_results[
+#  (fisher_results$chr == 1 & fisher_results$ps > 17886036 & fisher_results$ps < 17892632) | # AGO1
+#  (fisher_results$chr == 2 & fisher_results$ps > 16714460 & fisher_results$ps < 16723718) | # NRPE1
+#  (fisher_results$chr == 1 & fisher_results$ps > 11188293 & fisher_results$ps < 11192573) | # AGO3
+#  (fisher_results$chr == 4 & fisher_results$ps > 16336291 & fisher_results$ps < 16340314) | # CDCA7a
+#  (fisher_results$chr == 4 & fisher_results$ps > 10414428 & fisher_results$ps < 10421209) | # CMT2
+#  (fisher_results$chr == 5 & fisher_results$ps > 26648897 & fisher_results$ps < 26653191) | # DDM1
+#  (fisher_results$chr == 5 & fisher_results$ps > 19932114 & fisher_results$ps < 19938470) | # MET1
+#  (fisher_results$chr == 5 & fisher_results$ps > 15837178 & fisher_results$ps < 15840678),  # VIM3
+#]
+
+## Read genes of interest 
+apriori_genes <- read.csv("/groups/nordborg/projects/ddm1_resilencing/10_metadata/a_priori.genes.txt", sep="\t", header=F)
+colnames(apriori_genes) <-c("gene", "tair_id")
+library(biomaRt)
+ensembl <- useMart("plants_mart", dataset = "athaliana_eg_gene", host = "https://plants.ensembl.org")
+tair_ids <- apriori_genes$tair_id
+
+results <- getBM(
+  attributes = c("ensembl_gene_id", "chromosome_name", "start_position", "end_position", "strand"),
+  filters = "ensembl_gene_id",  # Use the correct filter
+  values = tair_ids,
+  mart = ensembl
+)
+
+
+# Assuming fisher_results is your SNP data and results is your gene table
+snps_of_interest_indices <- fisher_results[
+  Reduce(`|`, lapply(1:nrow(results), function(i) {
+    fisher_results$chr == as.numeric(results$chromosome_name[i]) &
+      fisher_results$ps > results$start_position[i] &
+      fisher_results$ps < results$end_position[i]
+  })),
+]
+# Add highlight column to your data
+# First, get the actual ps values from your filtered data
+snp_ids_of_interest <- paste(snps_of_interest_indices$chr, snps_of_interest_indices$ps, sep = "_")
+# Create SNP IDs for your TE data
+fisher_results$snp_id <- paste(fisher_results$chr, fisher_results$ps, sep = "_")
+# Highlight based on SNP ID match
+fisher_results$is_highlight <- fisher_results$snp_id %in% snp_ids_of_interest
+
+# Manhattan plot
+#fisher_results$fisher_log10 <- -log10(fisher_results$fisher_combined_p)
+
+# Remove infinity values
+#fisher_results <- fisher_results %>%
+#  filter(is.finite(fisher_log10))
+
+# Replace inf with highest pvalues 
+#fisher_results <- fisher_results %>%
+#  mutate(fisher_log10_clean = ifelse(is.infinite(fisher_log10), 
+#                                     320,  # or whatever max you want
+#                                     fisher_log10))
+
+max(-(log10(fisher_results$fisher_combined_p)))
+
+ggplot(fisher_results, aes(x = ps/1e6, y = -log10(fisher_combined_p))) +
+  geom_point(data = fisher_results[!fisher_results$is_highlight, ], 
+             aes(color = is_highlight, size = is_highlight), alpha = 0.7) +
+  geom_point(data = fisher_results[fisher_results$is_highlight, ], 
+             aes(color = is_highlight, size = is_highlight), alpha = 0.9) +
+  scale_color_manual(values = c("FALSE" = "#7F8CAA", "TRUE" = "#E55050")) +
+  scale_size_manual(values = c("FALSE" = 2, "TRUE" = 2)) +
+  scale_y_continuous(limits = c(0, 40)) +
+  facet_grid(~ chr, scales = "free_x", space = "free_x") +
+  labs(x = "Position (Mbp)", y = "-log(P-value)", 
+       title = "F1ddm1-F1Col, Fisher's combined") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+## Heatmap of individual TE gwas
+```{r}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(viridis)
+library(data.table)
+
+# Assuming your data is already loaded as 'long_individual_tes_gwas'
+# If you need to load it, uncomment and modify the path below:
+# long_individual_tes_gwas <- fread("your_file_path.csv")
+
+# Data preparation for heatmap
+prepare_gwas_heatmap <- function(gwas_data, significance_threshold = 0.05) {
+  
+  # Filter for significant results (optional)
+  # gwas_filtered <- gwas_data[p_wald < significance_threshold]
+  
+  # Create genomic position (combine chr and ps)
+  gwas_data[, genomic_pos := paste0("chr", chr, "_", ps)]
+  
+  # Convert p-values to -log10 for better visualization
+  gwas_data[, neg_log10_p := -log10(p_wald)]
+  
+  # Create bins for genomic positions if too many SNPs
+  # This helps with visualization when you have many positions
+  gwas_data[, pos_bin := cut(ps, breaks = 20, labels = FALSE), by = chr]
+  gwas_data[, binned_pos := paste0("chr", chr, "_bin", pos_bin)]
+  
+  return(gwas_data)
+}
+
+# Prepare the data
+gwas_prepared <- prepare_gwas_heatmap(long_individual_tes_gwas)
+
+# Create heatmap - Option 1: Using genomic positions vs TEs
+create_gwas_heatmap_v1 <- function(gwas_data, top_n_tes = 50) {
+  
+  # Select top TEs by minimum p-value
+  top_tes <- gwas_data[, .(min_p = min(p_wald)), by = TE][order(min_p)][1:top_n_tes]$TE
+  
+  # Filter data for top TEs
+  plot_data <- gwas_data[TE %in% top_tes]
+  
+  # Create the heatmap
+  p1 <- ggplot(plot_data, aes(x = binned_pos, y = TE, fill = neg_log10_p)) +
+    geom_tile() +
+    scale_fill_viridis_c(name = "-log10(p)", option = "plasma") +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.text.y = element_text(size = 6),
+      panel.grid = element_blank()
+    ) +
+    labs(
+      title = "GWAS Trans-effects Heatmap",
+      subtitle = paste("Top", top_n_tes, "TEs by significance"),
+      x = "Genomic Position (Binned)",
+      y = "Transposable Elements"
+    )
+  
+  return(p1)
+}
+
+# Create heatmap - Option 2: Chromosome-based view
+create_gwas_heatmap_v2 <- function(gwas_data, top_n_tes = 30) {
+  
+  # Select top TEs
+  top_tes <- gwas_data[, .(min_p = min(p_wald)), by = TE][order(min_p)][1:top_n_tes]$TE
+  
+  # Aggregate by chromosome and TE
+  chr_te_summary <- gwas_data[TE %in% top_tes, 
+                              .(mean_neg_log10_p = mean(neg_log10_p),
+                                min_p = min(p_wald),
+                                n_snps = .N), 
+                              by = .(chr, TE)]
+  
+  p2 <- ggplot(chr_te_summary, aes(x = factor(chr), y = TE, fill = mean_neg_log10_p)) +
+    geom_tile(color = "white", size = 0.1) +
+    scale_fill_viridis_c(name = "Mean\n-log10(p)", option = "plasma") +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 8),
+      panel.grid = element_blank()
+    ) +
+    labs(
+      title = "GWAS Trans-effects by Chromosome",
+      subtitle = paste("Top", top_n_tes, "TEs - Mean significance per chromosome"),
+      x = "Chromosome",
+      y = "Transposable Elements"
+    )
+  
+  return(p2)
+}
+
+# Generate the heatmaps
+heatmap_v1 <- create_gwas_heatmap_v1(gwas_prepared, top_n_tes = 50)
+heatmap_v2 <- create_gwas_heatmap_v2(gwas_prepared, top_n_tes = 30)
+
+# Display the heatmaps
+print(heatmap_v1)
+print(heatmap_v2)
+
+# Save the plots
+ggsave("gwas_trans_effects_heatmap_v1.png", heatmap_v1, 
+       width = 12, height = 8, dpi = 300)
+ggsave("gwas_trans_effects_heatmap_v2.png", heatmap_v2, 
+       width = 10, height = 8, dpi = 300)
+
+# Additional analysis: Summary statistics
+cat("\n=== GWAS Data Summary ===\n")
+cat("Total SNPs:", nrow(gwas_prepared), "\n")
+cat("Unique TEs:", length(unique(gwas_prepared$TE)), "\n")
+cat("Chromosomes:", paste(unique(gwas_prepared$chr), collapse = ", "), "\n")
+cat("Significant associations (p < 0.05):", sum(gwas_prepared$p_wald < 0.05), "\n")
+cat("Highly significant associations (p < 0.001):", sum(gwas_prepared$p_wald < 0.001), "\n")
+
+# Top 10 most significant associations
+top_associations <- gwas_prepared[order(p_wald)][1:10, .(chr, ps, TE, p_wald, neg_log10_p)]
+cat("\n=== Top 10 Most Significant Associations ===\n")
+print(top_associations)
+
+```
+
+
+## Individual TE manhattan 
+```{r}
+
+snps_of_interest_indices_ind <- long_individual_tes_gwas[
+  (long_individual_tes_gwas$chr == 1 & long_individual_tes_gwas$ps > 17886036 & long_individual_tes_gwas$ps < 17892632) | # AGO1
+  (long_individual_tes_gwas$chr == 2 & long_individual_tes_gwas$ps > 16714460 & long_individual_tes_gwas$ps < 16723718) | # NRPE1
+  (long_individual_tes_gwas$chr == 1 & long_individual_tes_gwas$ps > 11188293 & long_individual_tes_gwas$ps < 11192573) | # AGO3
+  (long_individual_tes_gwas$chr == 4 & long_individual_tes_gwas$ps > 16336291 & long_individual_tes_gwas$ps < 16340314) | # CDCA7a
+  (long_individual_tes_gwas$chr == 4 & long_individual_tes_gwas$ps > 10414428 & long_individual_tes_gwas$ps < 10421209) | # CMT2
+  (long_individual_tes_gwas$chr == 5 & long_individual_tes_gwas$ps > 26648897 & long_individual_tes_gwas$ps < 26653191) | # DDM1
+  (long_individual_tes_gwas$chr == 5 & long_individual_tes_gwas$ps > 19932114 & long_individual_tes_gwas$ps < 19938470) | # MET1
+  (long_individual_tes_gwas$chr == 5 & long_individual_tes_gwas$ps > 15837178 & long_individual_tes_gwas$ps < 15840678),  # VIM3
+]
+
+# Create SNP IDs for the regions of interest
+snp_ids_of_interest <- paste(snps_of_interest_indices_ind$chr, snps_of_interest_indices_ind$ps, sep = "_")
+
+# Filter for your specific TE
+#long_individual_tes_gwas_ind <- long_individual_tes_gwas[long_individual_tes_gwas$TE == "p_wald_AT5TE43315", ]
+
+# Create SNP IDs for your TE data
+long_individual_tes_gwas_ind <- long_individual_tes_gwas
+long_individual_tes_gwas_ind$snp_id <- paste(long_individual_tes_gwas_ind$chr, long_individual_tes_gwas_ind$ps, sep = "_")
+
+# Highlight based on SNP ID match
+long_individual_tes_gwas_filtered$is_highlight <- long_individual_tes_gwas_filtered$snp_id %in% snp_ids_of_interest
+
+ggplot(long_individual_tes_gwas_filtered, aes(x = ps/1e6, y = -log10(p_wald))) +
+  geom_point(data = long_individual_tes_gwas_filtered[!long_individual_tes_gwas_filtered$is_highlight, ], 
+             aes(color = is_highlight, size = is_highlight), alpha = 0.7) +
+  geom_point(data = long_individual_tes_gwas_filtered[long_individual_tes_gwas_filtered$is_highlight, ], 
+             aes(color = is_highlight, size = is_highlight), alpha = 0.9) +
+  scale_color_manual(values = c("FALSE" = "#7F8CAA", "TRUE" = "red")) +
+  scale_size_manual(values = c("FALSE" = 0.6, "TRUE" = 1.2)) +
+  scale_y_continuous(limits = c(0, 7)) +
+  facet_grid(~ chr, scales = "free_x", space = "free_x") +
+  labs(x = "Position (Mbp)", y = "-log10(P-value)", 
+       title = "Manhattan Plot for AT5TE43315") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+library(ggplot2)
+long_individual_tes_gwas_filtered <- long_individual_tes_gwas_ind[-log10(long_individual_tes_gwas_ind$p_wald)>3,]
+
+
+## Map position of the family 
+long_individual_tes_gwas_filtered_with_positions <- inner_join(long_individual_tes_gwas_filtered,te_annotation, by=c("TE"="Transposon_Family"))
+  
+library(ggplot2)
+
+ggplot(long_individual_tes_gwas_filtered_with_positions,
+       aes(x = ps/1e6, y = Transposon_min_Start/1e6, color = -log10(p_wald))) +
+  geom_point(alpha = 0.8, size = 0.6) +
+  scale_color_gradient(low = "#7F8CAA", high = "red",
+                       limits = c(0, 7), oob = scales::squish,
+                       name = "-log10(P)") +
+  scale_y_continuous(limits = c(0, 7)) +
+  facet_grid(~ chr, scales = "free_x", space = "free_x") +
+  labs(x = "Position (Mbp)", y = "-log10(P-value)")+
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+## Get shared peaks among TEs
+```{r}
+
+long_individual_tes_gwas_filtered <- long_individual_tes_gwas[-log10(long_individual_tes_gwas$p_wald)>5,]
+
+shared_peaks <- long_individual_tes_gwas_filtered %>%
+  dplyr::filter(-log10(p_wald) > 7) %>%
+  group_by(chr, ps) %>%
+  dplyr::summarise(n_tes = n_distinct(TE), .groups = "drop") %>%
+  filter(n_tes > 1)
+
+
+bin_size <- 5000
+
+shared_peaks <- long_individual_tes_gwas_filtered %>%
+  mutate(pos_bin = floor(ps / bin_size) * bin_size) %>%  # bin position
+  group_by(chr, pos_bin) %>%
+  summarise(n_tes = n_distinct(TE), .groups = "drop") %>%
+  filter(n_tes > 1)  # appears in more than 1 TE
+
+
+shared_peaks$highlight_gene <- with(shared_peaks,
+  (chr == 1 & ps > 17886036 & ps < 17892632) |  # AGO1
+  (chr == 2 & ps > 16714460 & ps < 16723718) |  # NRPE1
+  (chr == 1 & ps > 11188293 & ps < 11192573) |  # AGO3
+  (chr == 4 & ps > 16336291 & ps < 16340314) |  # CDCA7a
+  (chr == 4 & ps > 10414428 & ps < 10421209) |  # CMT2
+  (chr == 5 & ps > 26648897 & ps < 26653191) |  # DDM1
+  (chr == 5 & ps > 19932114 & ps < 19938470) |  # MET1
+  (chr == 5 & ps > 15837178 & ps < 15840678)    # VIM3
+)
+
+shared_peaks$highlight_gene <- shared_peaks$highlight_gene
+
+
+ggplot(shared_peaks, aes(x = ps / 1e6, y = n_tes)) +
+  geom_point() +
+  facet_wrap(~chr, ncol=5) +
+  geom_point(
+    data = subset(shared_peaks, highlight_gene),
+    aes(x = ps / 1e6, y = n_tes),  # now same unit
+    color = "red",
+    shape = 4,
+    size = 1.5,
+    stroke = 1.5
+  ) +
+  labs(x = "Position (Mb)", y = "Number of TEs", title = "Shared Peaks -log10(pval)>5 Across TEs")
+
+```
+## Show on the heatmap 
+```{r}
+long_individual_tes_gwas_filtered <- sig_peaks_ann_filtered[-log10(sig_peaks_ann_filtered$p_wald)>4,]
+
+sig_peaks <- long_individual_tes_gwas_filtered %>%
+  mutate(
+    pwald_log10 = -log10(p_wald),
+    highlight_gene = (chr == 1 & ps > 17886036 & ps < 17892632) |  # AGO1
+                     (chr == 2 & ps > 16714460 & ps < 16723718) |  # NRPE1
+                     (chr == 1 & ps > 11188293 & ps < 11192573) |  # AGO3
+                     (chr == 4 & ps > 16336291 & ps < 16340314) |  # CDCA7a
+                     (chr == 4 & ps > 10414428 & ps < 10421209) |  # CMT2
+                     (chr == 5 & ps > 26648897 & ps < 26653191) |  # DDM1
+                     (chr == 5 & ps > 19932114 & ps < 19938470) |  # MET1
+                     (chr == 5 & ps > 15837178 & ps < 15840678)    # VIM3
+  )
+
+
+
+##Add TE info 
+
+#te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+#Order transposons 
+#sig_peaks$TE <- gsub("p_wald_", "", sig_peaks$TE)
+#sig_peaks_ann <- right_join(te_annotation,sig_peaks, by=c("Transposon_Name"="TE"))
+
+sig_peaks_ann2 <- sig_peaks_ann_filtered %>%
+  mutate(TE = Transposon_Name) %>%
+  arrange(chr, Transposon_min_Start) %>%
+  mutate(TE = factor(TE, levels = unique(TE)))  # levels in order
+
+#sig_peaks_ann2$length <- sig_peaks_ann2$Transposon_max_End-sig_peaks_ann2$Transposon_min_Start
+#sig_peaks_ann2_with_length_s <- sig_peaks_ann2[sig_peaks_ann2$highlight_gene=="TRUE",]
+
+sig_peaks_ann2_chr1 <- sig_peaks_ann2[sig_peaks_ann2$chr==1,]
+ggplot(sig_peaks_ann2_chr1, aes(x = ps / 1e6, y = TE)) +
+  # Main points
+  geom_point(aes(color = -log10(p_wald)), alpha = 0.4, size = 0.3) +
+  # Highlighted points with different shape
+#  geom_point(
+#    data = subset(sig_peaks_ann2, highlight_gene),
+#    aes(x = ps / 1e6, y = TE, color = pwald_log10),
+#    shape = 17,  # triangle
+#    size = 4,
+#    stroke = 0.5
+#  ) +
+  
+  scale_color_gradient2(
+    low = "#FAF0E6",
+    mid = "#B9B4C7",
+    high = "red",
+    midpoint = 5,
+    limits = c(3, 8),
+    oob = scales::squish
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 3),
+    strip.background = element_blank()
+  )
+
+```
+## Cluster TEs together 
+```{r}
+# Step 1: Create a matrix for clustering based on signal patterns
+te_signal_matrix <- sig_peaks_ann2 %>%
+  # Create bins or use existing genomic positions
+  mutate(pos_bin = round(ps / 1e6, 1)) %>%  # 100kb bins
+  select(TE, chr, pos_bin, pwald_log10) %>%
+  # Create a wide matrix: TE x genomic_position
+  unite("chr_pos", chr, pos_bin, sep = "_") %>%
+  pivot_wider(
+    names_from = chr_pos,
+    values_from = pwald_log10,
+    values_fill = 0,  # Fill missing with 0
+    values_fn = max  # If multiple values, take max
+  )
+
+# Step 2: Prepare matrix for clustering
+te_matrix <- te_signal_matrix %>%
+  column_to_rownames("TE") %>%
+  as.matrix()
+
+# Step 3: Hierarchical clustering
+te_dist <- dist(te_matrix, method = "euclidean")
+te_hclust <- hclust(te_dist, method = "complete")
+
+# Step 4: Get clustered order
+te_clustered_order <- rownames(te_matrix)[te_hclust$order]
+
+# Step 5: Apply clustering order to your data
+sig_peaks_ann_clustered <- sig_peaks_ann2 %>%
+  mutate(TE = factor(TE, levels = te_clustered_order))
+
+# Step 6: Plot with clustered order
+ggplot(sig_peaks_ann_clustered, aes(x = ps / 1e6, y = TE)) +
+  geom_point(aes(color = pwald_log10), alpha = 0.4, size = 0.3) +
+  geom_point(
+    data = subset(sig_peaks_ann_clustered, highlight_gene),
+    aes(x = ps / 1e6, y = TE, color = pwald_log10),
+    shape = 17, size = 3, stroke = 0.5
+  ) +
+  facet_wrap(~chr, scales = "free_x", ncol = 5) +
+  labs(
+    x = "Genomic Position (Mbp)",
+    y = "Transposon (Clustered)",
+    color = "-log10(p-value)",
+    title = "TE GWAS Results - Hierarchically Clustered"
+  ) +
+  scale_color_gradient2(
+    low = "#FAF0E6", mid = "#B9B4C7", high = "red",
+    midpoint = 5, limits = c(4, 10), oob = scales::squish
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 3),
+    strip.background = element_blank()
+  )
+```
+
+
+```{r}
+
+long_individual_tes_gwas_ind$snp_id <- paste(long_individual_tes_gwas_ind$chr, long_individual_tes_gwas_ind$ps, sep = "_")
+
+# Highlight based on SNP ID match
+long_individual_tes_gwas_ind$is_highlight <- long_individual_tes_gwas_ind$snp_id %in% snp_ids_of_interest
+# Create a logical vector: TRUE if at least one value column in the row has -log10(p) >= 4
+rows_to_keep <- apply(
+  -log10(as.matrix(individual_tes_gwas[, ..value_cols])),
+  1,
+  function(x) any(x >= 4, na.rm = TRUE)
+)
+
+# Subset the data.table to keep only those rows
+filtered_dt <- individual_tes_gwas[rows_to_keep]
+
+p_wald_cols <- grep("^p_wald_", names(individual_tes_gwas), value = TRUE)
+individual_tes_gwas[, (p_wald_cols) := lapply(.SD, as.numeric), .SDcols = p_wald_cols]
+library(data.table)
+individual_tes_gwas <- as.data.table(individual_tes_gwas)
+
+long_individual_tes_gwas <- melt(
+  individual_tes_gwas,
+  id.vars = c("chr", "ps"),
+  variable.name = "TE",
+  value.name = "p_wald"
+)
+
+
+long_individual_tes_gwas$pwald_log10 <- -log10(long_individual_tes_gwas$p_wald)
+sig_thresh <- 4 # -log10(1e-5)
+sig_peaks <- long_individual_tes_gwas[long_individual_tes_gwas$pwald_log10 > sig_thresh,]
+sig_peaks$TE <- gsub("p_wald_", "", sig_peaks$TE)
+```
+
+
+```{r}
+
+# Check your p-values first
+clean_p_values <- long_individual_tes_gwas$p_wald[!is.na(long_individual_tes_gwas$p_wald)]
+result_clean <- fishers_method_robust(clean_p_values)
+print(result_clean)
+
+# Improved Fisher's method with better numerical handling
+fishers_method_robust <- function(p_values) {
+  # Remove NA values and problematic p-values
+  valid_p <- p_values[!is.na(p_values) & p_values > 0 & p_values < 1]
+  
+  if(length(valid_p) == 0) {
+    return(list(combined_p = NA, test_stat = NA, n_tests = 0))
+  }
+  
+  # Fisher's method: -2 * sum(log(p))
+  test_stat <- -2 * sum(log(valid_p))
+  df <- 2 * length(valid_p)
+  
+  # Use pchisq with lower.tail=FALSE for better numerical precision
+  combined_p <- pchisq(test_stat, df, lower.tail = FALSE)
+  
+  return(list(
+    combined_p = combined_p,
+    test_stat = test_stat,
+    n_tests = length(valid_p),
+    log10_combined_p = -log10(combined_p)
+  ))
+}
+
+# Test with robust version
+result_robust <- fishers_method_robust(long_individual_tes_gwas$p_wald)
+print(result_robust)
+
+# If still 0, check the test statistic magnitude
+print(paste("Test statistic:", result_robust$test_stat))
+print(paste("Is test stat very large?", result_robust$test_stat > 100))
+```
+
+## For conference 
+
+```{r}
+##Get a 10% highest pvalues for each TE
+library(data.table)
+# Assuming sig_peaks is already a data.table
+top10_by_te <- sig_peaks[order(-pwald_log10), .SD[1:10], by = TE]
+
+```
+
+```{r}
+top_hits <- sig_peaks %>%
+  arrange(desc(pwald_log10)) %>%
+  slice_head(n = 10)
+
+# Add a column to flag top hits
+sig_peaks <- sig_peaks %>%
+  mutate(is_top = ifelse(paste(chr, ps, TE) %in% paste(top_hits$chr, top_hits$ps, top_hits$TE), "Top", "Other"))
+
+
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+#Order transposons 
+sig_peaks$TE <- gsub("p_wald_", "", sig_peaks$TE)
+sig_peaks_ann <- inner_join(te_annotation,sig_peaks, by=c("Transposon_Name"="TE"))
+
+ggplot(sig_peaks_ann, aes(x = ps, y = pwald_log10)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("Top" = "red", "Other" = "grey")) +
+  facet_wrap(~ chr, scales = "free_x") +
+  labs(x = "Genomic Position", y = "-log10(p-value)", color = "Significance") +
+  theme_minimal()+facet_wrap(~Transposon_Super_Family)
+
+
+# Ensure 'chr' is a factor with the desired order
+sig_peaks_ann$chr <- factor(sig_peaks_ann$chr, levels = sort(unique(sig_peaks_ann$chr)))
+
+# If you want to order Transposon_Super_Family as well, do the same:
+# sig_peaks_ann$Transposon_Super_Family <- factor(sig_peaks_ann$Transposon_Super_Family, levels = desired_order)
+
+# Sort chromosomes as factors (e.g., 1,2,3,4,5)
+sig_peaks_ann$chr <- factor(sig_peaks_ann$chr, levels = sort(unique(sig_peaks_ann$chr)))
+
+sig_peaks_ann_ltr_gupsy<-sig_peaks_ann[sig_peaks_ann$Transposon_Super_Family=="LTR/Copia",]
+sig_peaks_ann_ltr_gupsy$ps_Mbp <- sig_peaks_ann_ltr_gupsy$ps / 1e6
+
+
+sig_peaks_ann_ltr_gupsy$highlight <-(
+  (sig_peaks_ann_ltr_gupsy$chr == "4" & sig_peaks_ann_ltr_gupsy$ps >= 9040683 & sig_peaks_ann_ltr_gupsy$ps <= 9042129))
+
+
+n_tests <- nrow(sig_peaks_ann_ltr_gupsy)  # Number of tests (SNPs)
+bonf_threshold <- -log10(0.05/n_tests)
+
+ggplot(sig_peaks_ann_ltr_gupsy, aes(x = ps_Mbp, y = pwald_log10)) +
+  geom_point(alpha = 0.6, size = 0.3) +
+  facet_grid(Transposon_Super_Family ~ chr, scales = "free_x", space = "free_x") +
+  labs(x = "Genomic Position (Mbp)", y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(
+    strip.text.x = element_text(size = 6),
+    strip.text.y = element_text(size = 6),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6)
+  )+geom_hline(yintercept=7, linetype="dashed", 
+                color = "darkgreen", size=0.5)+  geom_point(
+    data = subset(sig_peaks_ann_ltr_gupsy, highlight),
+    color = "blue", size = 2, shape = 21, fill = "yellow", stroke = 1.2
+  )
+
+sig_peaks_ann_ltr_gupsy_sig <-sig_peaks_ann_ltr_gupsy[sig_peaks_ann_ltr_gupsy$pwald_log10>8,]
+```
+
+
+```{r}
+
+p_wald_cols <- grep("^p_wald_", names(individual_tes_gwas), value = TRUE)
+individual_tes_gwas[, (p_wald_cols) := lapply(.SD, as.numeric), .SDcols = p_wald_cols]
+
+
+long_individual_tes_gwas <- melt(
+  individual_tes_gwas,
+  id.vars = c("chr", "ps"),
+  variable.name = "TE",
+  value.name = "p_wald"
+)
+
+
+long_individual_tes_gwas$pwald_log10 <- -log10(long_individual_tes_gwas$p_wald)
+
+# Filter for significant peaks
+sig_thresh <- 4 # -log10(1e-5)
+sig_peaks <- long_individual_tes_gwas[long_individual_tes_gwas$pwald_log10 > sig_thresh,]
+
+## Ad TE info 
+
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+#Order transposons 
+sig_peaks$TE <- gsub("p_wald_", "", sig_peaks$TE)
+sig_peaks_ann <- inner_join(te_annotation,sig_peaks, by=c("Transposon_Name"="TE"))
+
+sig_peaks_ann_chr <-sig_peaks_ann[sig_peaks_ann$chr==3,]
+
+sig_peaks_ann_chr <- sig_peaks_ann_chr %>%
+  arrange(Transposon_min_Start, chr)
+
+# Set factor levels for y-axis ordering
+sig_peaks_ann_chr$Transposon_Name <- factor(
+  sig_peaks_ann_chr$Transposon_Name,
+  levels = unique(sig_peaks_ann_chr$Transposon_Name)
+)
+
+# Plot
+## Get a cmt2 targetged TEs 
+eriko_cmt2_genes <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_eriko_targets/cmt2_target_tes.txt", header=F)
+sig_peaks_ann_chr$Transposon_Name <- as.character(sig_peaks_ann_chr$Transposon_Name)
+sig_cmt2_targeted <- sig_peaks_ann_chr[as.character(sig_peaks_ann_chr$Transposon_Name) %in% eriko_cmt2_genes$V1, ]
+
+
+  
+ggplot(sig_peaks, aes(x = ps, y = TE, color = pwald_log10)) +
+  geom_point(alpha = 0.5, size = 0.3) +
+  facet_wrap(~chr, scales = "free_x") +
+  labs(
+    x = "Genomic Position",
+    y = "Transposon (ordered by position)",
+    color = "-log10(p-value)",
+    title = "TE Signals Ordered by Genomic Position"
+  ) +
+  theme_bw() +
+  scale_color_gradient2(
+    low = "#FAF0E6",
+    mid = "#B9B4C7",
+    high = "red",
+    midpoint = 7,
+    limits = c(6, 10),
+    oob = scales::squish
+  ) +
+  theme(
+    axis.text.y = element_text(size = 6)
+  )
+
+```
+
+
+```{r}
+library(dplyr)
+
+meta_gwas <- sig_peaks %>%
+  group_by(chr, ps) %>%
+  summarize(
+    fisher_stat = -2 * sum(log(p_wald), na.rm=TRUE),
+    n = n()
+  ) %>%
+  mutate(
+    fisher_p = pchisq(fisher_stat, df = 2 * n, lower.tail = FALSE),
+    fisher_log10 = -log10(fisher_p)
+  )
+
+library(ggplot2)
+
+ggplot(meta_gwas, aes(x = ps, y = fisher_log10, color = as.factor(chr))) +
+  geom_point(size = 1) +
+  facet_wrap(~ chr, scales = "free_x", nrow = 1) +
+  labs(x = "Genomic Position", y = "-log10(meta p-value)", title = "Meta-GWAS Manhattan Plot") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+library(dplyr)
+
+meta_family <- sig_peaks %>%
+  group_by(chr, ps) %>%
+  summarize(
+    X2_stat = -2 * sum(log(p_wald), na.rm = TRUE),
+    k = sum(!is.na(p_wald))
+  ) %>%
+  mutate(
+    p_combined = pchisq(X2_stat, df = 2 * k, lower.tail = FALSE),
+    log10_p_combined = -log10(p_combined)
+  )
+```
+
+
+```{r}
+library(dplyr)
+
+# For each TE, get the top 10% SNPs by -log10(p)
+sig_peaks_top10 <- sig_peaks %>%
+  group_by(TE) %>%
+  arrange(desc(pwald_log10)) %>%
+  mutate(rank = row_number(),
+         n = n(),
+         top10 = rank <= ceiling(0.1 * n)) %>%
+  filter(top10) %>%
+  ungroup()
+```
+
+```{r}
+library(tidyr)
+
+# Create a unique SNP identifier (e.g., chr:ps)
+sig_peaks_top10 <- sig_peaks_top10 %>%
+  mutate(snp_id = paste(chr, ps, sep = ":"))
+
+# Pivot to wide format
+heatmap_data <- sig_peaks_top10 %>%
+  select(TE, snp_id, pwald_log10) %>%
+  pivot_wider(names_from = snp_id, values_from = pwald_log10, values_fill = 0)
+
+# Set rownames for the heatmap
+heatmap_data <- as.data.frame(heatmap_data)
+rownames(heatmap_data) <- heatmap_data$TE
+heatmap_data$TE <- NULL
+```
+
+
+```{r}
+p_wald_cols <- grep("^p_wald_", names(individual_tes_gwas), value = TRUE)
+individual_tes_gwas[, (p_wald_cols) := lapply(.SD, as.numeric), .SDcols = p_wald_cols]
+
+
+long_individual_tes_gwas <- melt(
+  individual_tes_gwas,
+  id.vars = c("chr", "ps"),
+  variable.name = "TE",
+  value.name = "p_wald"
+)
+
+#long_individual_tes_gwas_filtered <-long_individual_tes_gwas[-log10(long_individual_tes_gwas$p_wald)>15,]
+
+min(long_individual_tes_gwas$p_wald)
+long_individual_tes_gwas$pwald_log10 <- -log10(long_individual_tes_gwas$p_wald)
+# Get TE heritability 
+high_heritable_with_families2 <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/gwas_set_all_plates_ds_controls/blups_gwas/log2_mean_centered_col0def_270acc_f1ddm1/individual_te_excluded_mismatches/heritability_tesmorehtan02.csv")
+high_heritable_with_families2 <- high_heritable_with_families2 %>% select(TE_id,heritability, Super.Family)
+# Get most heritable TEs 
+high_heritable_with_families2 <- high_heritable_with_families2[high_heritable_with_families2$heritability>0.3,]
+# Join with GWAS results
+long_individual_tes_gwas$TE <- gsub("p_wald_", "",long_individual_tes_gwas$TE)
+long_individual_tes_gwas_highly_heritable <- long_individual_tes_gwas[long_individual_tes_gwas$TE %in% high_heritable_with_families2$TE_id, ]
+
+## Assign superfamilies
+high_heritable_with_families2 <- high_heritable_with_families2 %>% select(TE_id,Super.Family)
+
+```
+
+```{r}
+long_individual_tes_gwas <-  long_individual_tes_gwas %>%
+  arrange(ps, chr)
+
+long_individual_tes_gwas_filtered <-long_individual_tes_gwas[long_individual_tes_gwas$pwald_log10>2,]
+
+
+```
+## Load TE annotation
+```{r}
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt")
+#Order transposons 
+long_individual_tes_gwas_filtered$TE <- gsub("p_wald_", "", long_individual_tes_gwas_filtered$TE)
+long_individual_tes_gwas_filtered_with_annotation <- inner_join(te_annotation,long_individual_tes_gwas_filtered, by=c("Transposon_Name"="TE"))
+```
+
+```{r}
+
+long_individual_tes_gwas_filtered <-long_individual_tes_gwas_filtered_with_annotation[ long_individual_tes_gwas_filtered_with_annotation$pwald_log10>3 ,]
+
+long_individual_tes_gwas_filtered <-  long_individual_tes_gwas_filtered %>%
+  arrange(ps,chr)
+
+
+## Highlight CMT2
+long_individual_tes_gwas_filtered$highlight <- 
+  long_individual_tes_gwas_filtered$ps >= 17895231 & long_individual_tes_gwas_filtered$ps <= 17895231
+
+ggplot(sig_peaks_ann_chr, aes(x = ps, y = pwald_log10)) +
+  # All points, colored by pwald_log10
+  geom_point(aes(color = pwald_log10), size = 0.4, alpha = 0.8) +
+  # Highlighted points, override color
+  geom_point(
+    data = subset(long_individual_tes_gwas_filtered, highlight),
+    color = "blue", size = 1, alpha = 1
+  ) +
+  scale_color_gradient2(
+    low = "#FAF0E6",
+    mid = "#B9B4C7",
+    high = "red",
+    midpoint = 5,
+    limits = c(3, 7),
+    oob = scales::squish
+  ) +
+  theme_minimal() +
+  labs(color = "-log10(p)") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  xlab("position Chr4") +
+  ylab("TE") +
+  facet_wrap(~Transposon_Super_Family)
+
+
+long_individual_tes_gwas_filtered %>%
+  arrange(desc(pwald_log10))
+
+```
+
+
+
+```{r}
+
+
+ggplot(long_individual_tes_gwas_filtered, aes(x = ps, y = pwald_log10, color = pwald_log10)) +
+  geom_point(size = 0.4, alpha = 0.8) +
+  scale_color_gradient2(
+    low = "#FAF0E6",      # low p_wald_log10 values
+    mid = "#B9B4C7",     # middle
+    high = "red",      # high p_wald_log10 values
+    midpoint = 5,      # adjust midpoint (example: 5 = -log10(p) of 1e-5)
+    limits = c(3, 7),
+    oob = scales::squish# adjust your min/max range
+  ) +
+  theme_minimal() +
+  labs(
+    color = "-log10(p)"
+  ) +  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        #axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())+xlab("position")+ylab("TE log10(pvalue)")+facet_wrap(~Transposon_Super_Family)
+
+
+long_individual_tes_gwas_filtered_cmt2 %>%
+  arrange(desc(pwald_log10))
+
+long_individual_tes_gwas_filtered_cmt2 <- long_individual_tes_gwas_filtered[long_individual_tes_gwas_filtered$ps>=10414428-5000 & long_individual_tes_gwas_filtered$ps<= 10421209+5000,]
+
+```
+## Heatmap 
+```{r}
+
+long_individual_tes_gwas_filtered_family <- sig_peaks_ann[sig_peaks_ann$Transposon_Super_Family=="ATCOPIA89",]
+long_individual_tes_gwas_filtered_family <-  long_individual_tes_gwas_filtered_family %>%
+  arrange(ps,chr, decrease=F)
+
+##Highligh targets 
+
+long_individual_tes_gwas_filtered_family$highlight <- (
+  (long_individual_tes_gwas_filtered_family$chr == "1" & long_individual_tes_gwas_filtered_family$ps > 17886036 & long_individual_tes_gwas_filtered_family$ps < 17892632) | # AGO1
+  (long_individual_tes_gwas_filtered_family$chr == "2" & long_individual_tes_gwas_filtered_family$ps > 16714460 & long_individual_tes_gwas_filtered_family$ps < 16723718) | # NRPE1
+  (long_individual_tes_gwas_filtered_family$chr == "1" & long_individual_tes_gwas_filtered_family$ps > 11188293 & long_individual_tes_gwas_filtered_family$ps < 11192573) | # AGO3
+  (long_individual_tes_gwas_filtered_family$chr == "4" & long_individual_tes_gwas_filtered_family$ps > 16336291 & long_individual_tes_gwas_filtered_family$ps < 16340314) | # CDCA7a
+  (long_individual_tes_gwas_filtered_family$chr == "4" & long_individual_tes_gwas_filtered_family$ps > 10414428 & long_individual_tes_gwas_filtered_family$ps < 10421209) | # CMT2
+  (long_individual_tes_gwas_filtered_family$chr == "5" & long_individual_tes_gwas_filtered_family$ps > 26648897 & long_individual_tes_gwas_filtered_family$ps < 26653191) | # DDM1
+  (long_individual_tes_gwas_filtered_family$chr == "5" & long_individual_tes_gwas_filtered_family$ps > 19932114 & long_individual_tes_gwas_filtered_family$ps < 19938470) | # MET1
+  (long_individual_tes_gwas_filtered_family$chr == "5" & long_individual_tes_gwas_filtered_family$ps > 15837178 & long_individual_tes_gwas_filtered_family$ps < 15840678)   # VIM3
+)
+
+
+ggplot(long_individual_tes_gwas_filtered_family, aes(x = ps, y = pwald_log10)) +
+  # All points
+  geom_point(aes(color = pwald_log10), size = 0.4, alpha = 0.8) +
+  # Highlighted points
+  geom_point(
+    data = subset(long_individual_tes_gwas_filtered_family, highlight),
+    color = "blue", size = 2, shape = 21, fill = "yellow", stroke = 1.2
+  ) +
+  scale_color_gradient2(
+    low = "#FAF0E6",
+    mid = "#B9B4C7",
+    high = "red",
+    midpoint = 5,
+    limits = c(3, 7),
+    oob = scales::squish
+  ) +
+  theme_minimal() +
+  labs(color = "-log10(p)") +
+  xlab("position") +
+  ylab("TE") +
+  facet_wrap(~chr, nrow = 1)
+
+## Get TEs with max pvalue
+
+te_chr_signals <- long_individual_tes_gwas_filtered_family %>%
+  group_by(Transposon_Name, chr, ps) %>%
+  summarise(
+    n_hits = n(),
+    max_signal = max(pwald_log10),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(max_signal))
+
+window_size <- 10000  # 10 kb window
+
+
+
+clustered_hits <- te_chr_signals %>%
+  arrange(Transposon_Name, chr, ps) %>%
+  group_by(Transposon_Name, chr) %>%
+  mutate(
+    pos_diff = ps - lag(ps, default = first(ps)),
+    cluster_id = cumsum(pos_diff > window_size)
+  ) %>%
+  group_by(Transposon_Name, chr, cluster_id) %>%
+  summarise(
+    n_cluster_hits = n(),
+    cluster_start = min(ps),
+    cluster_end = max(ps),
+    max_signal = max(max_signal),
+    .groups = "drop"
+  ) %>%
+  filter(n_cluster_hits > 1)
+
+library(ggplot2)
+
+library(ggplot2)
+
+highly_clustered_tes <- clustered_hits %>%
+  filter(n_cluster_hits >= 5)
+
+ggplot(highly_clustered_tes, aes(x = factor(chr), y = Transposon_Name, fill = max_signal)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "plasma") +
+  labs(
+    x = "Chromosome",
+    y = "Transposon Name",
+    fill = "Max Signal",
+    title = "TEs with Consistent Signal by Chromosome"
+  ) +
+  theme_minimal()
+```
+
+
+### Visualize trans peaks
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+
+sig_peaks_ann_ltr <-sig_peaks_ann[sig_peaks_ann$Transposon_Super_Family=='LTR/Gypsy',]
+dt <- sig_peaks_ann
+
+# Bin positions within each chromosome
+dt <- dt %>%
+  group_by(chr) %>%
+  mutate(bin = cut(ps, breaks=20, labels=FALSE)) %>%
+  ungroup()
+
+# Create a combined bin label
+dt <- dt %>%
+  mutate(chr_bin = paste0("chr", chr, "_bin", bin))
+
+# Create a matrix: rows = TEs, columns = bins, values = mean(pwald_log10)
+heatmap_data <- dt %>%
+  group_by(Transposon_Name, chr_bin) %>%
+  summarize(value = mean(pwald_log10, na.rm=TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = chr_bin, values_from = value, values_fill = 0)
+
+# Set rownames
+heatmap_data <- as.data.frame(heatmap_data)
+rownames(heatmap_data) <- heatmap_data$Transposon_Name
+heatmap_data$Transposon_Name <- NULL
+
+# Order columns by chromosome and bin
+col_order <- gsub("chr", "", colnames(heatmap_data))
+chr_num <- as.numeric(sub("_bin.*", "", col_order))
+bin_num <- as.numeric(sub(".*_bin", "", col_order))
+order_idx <- order(chr_num, bin_num)
+mat <- as.matrix(heatmap_data[, order_idx])
+
+# Plot heatmap without clustering
+# Define breaks
+breaks <- c(0, 5, 10, max(mat, na.rm=TRUE))
+
+# Define colors for each interval
+colors <- c("white", "blue", "red", "darkred")
+library(scales)
+custom_palette <- c(
+  rep("white", 20),      # 0 to 6
+  rep("#EEF296", 20),    # 6 to 8
+  rep("#9ADE7B", 30),    # 8 to 10
+  rep("#508D69", 30)     # 10 to max
+)
+
+
+pheatmap(mat,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,   # Set to TRUE if you want to see TE names
+         show_colnames = FALSE,  # Set to TRUE if you want to see bin labels
+         color = custom_palette)
+```
+
+```{r}
+# Get chromosome names from your column names
+chr_bins <- strsplit(colnames(mat), "_bin")
+chromosomes <- sapply(chr_bins, function(x) x[1])
+unique_chrs <- unique(chromosomes)
+# Store the order of TEs for each chromosome
+row_order <- c()
+
+for (chr in unique_chrs) {
+  # Select columns for this chromosome
+  chr_cols <- which(chromosomes == chr)
+  mat_chr <- mat[, chr_cols, drop=FALSE]
+  
+  # Cluster rows (TEs) for this chromosome
+  if (nrow(mat_chr) > 1) {
+    hc <- hclust(dist(mat_chr))
+    row_order <- c(row_order, rownames(mat_chr)[hc$order])
+  } else {
+    row_order <- c(row_order, rownames(mat_chr))
+  }
+}
+mat_ordered <- mat[row_order, ]
+pheatmap(mat_ordered,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         color = custom_palette)
+
+
+agg_data <- dt %>%
+  group_by(chr_bin) %>%
+  summarize(mean_signal = mean(pwald_log10, na.rm=TRUE),
+            median_signal = median(pwald_log10, na.rm=TRUE),
+            n = n())
+
+family_heatmap <- dt %>%
+  group_by(Transposon_Family, chr_bin) %>%
+  summarize(mean_signal = mean(pwald_log10, na.rm=TRUE)) %>%
+  pivot_wider(names_from = chr_bin, values_from = mean_signal, values_fill = 0)
+
+# Set rownames and plot as before
+
+library(tidyr)
+library(pheatmap)
+
+# Aggregate mean signal per family per bin
+family_heatmap <- dt %>%
+  group_by(Transposon_Family, chr_bin) %>%
+  summarize(mean_signal = mean(pwald_log10, na.rm=TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = chr_bin, values_from = mean_signal, values_fill = 0)
+
+# Set rownames for the heatmap
+family_heatmap <- as.data.frame(family_heatmap)
+rownames(family_heatmap) <- family_heatmap$Transposon_Family
+family_heatmap$Transposon_Family <- NULL
+
+# Order columns by chromosome and bin
+col_order <- gsub("chr", "", colnames(family_heatmap))
+chr_num <- as.numeric(sub("_bin.*", "", col_order))
+bin_num <- as.numeric(sub(".*_bin", "", col_order))
+order_idx <- order(chr_num, bin_num)
+mat_family <- as.matrix(family_heatmap[, order_idx])
+
+# Plot heatmap
+pheatmap(mat_family,
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         color = colorRampPalette(c("white", "#9ADE7B", "#508D69"))(100))
+```
+
+```{r}
+library(ggplot2)
+dt <-sig_peaks
+# Optionally, add a column for cis/trans
+dt[, is_trans := !(ps >= Transposon_min_Start & ps <= Transposon_max_End)]
+
+ggplot(dt, aes(x = ps, y = pwald_log10, color = is_trans)) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~chr, scales = "free_x") +
+  labs(x = "Genomic Position", y = "-log10(p-value)", color = "Trans?") +
+  theme_bw()
+
+```
+
+```{r}
+# Install and load required packages
+# install.packages("metap")
+# install.packages("data.table")
+# install.packages("ggplot2")
+library(metap)
+library(data.table)
+library(ggplot2)
+
+# Get all p-value columns
+# Define your threshold (e.g., 1e-20)
+
+
+# Filter rows using apply()
+p_value_columns <- grep("^p_wald", names(individual_tes_gwas), value = TRUE)
+
+
+##Identify SNPs with extreme pvalues
+
+# Function to combine p-values using Fisher's method from metap
+log_fisher_combine <- function(p_values) {
+  p_values <- pmax(p_values, 1e-300)  # Avoid log(0)
+  log_p <- log(p_values)
+  chi_stat <- -2 * sum(log_p)
+  
+  if (chi_stat > 30000) {  # Threshold to prevent underflow
+    return(-Inf)  # Represents p = 0 in log-space
+  } else {
+    df <- 2 * length(p_values)
+    pchisq(chi_stat, df, lower.tail = FALSE, log.p = TRUE)
+  }
+}
+
+
+# Apply the function to combine p-values
+individual_tes_gwas$combined_p <- apply(individual_tes_gwas[, ..p_value_columns], 1, log_fisher_combine)
+
+# Prepare data for Manhattan plot
+
+manhattan_data <- individual_tes_gwas[, .(chr, ps, combined_p)] # Sort
+manhattan_data <- manhattan_data[!is.na(combined_p)] # Remove NA 
+manhattan_data$chr <- as.factor(manhattan_data$chr)
+
+# Order chromosomes and calculate cumulative position
+setorder(manhattan_data, chr, ps)
+chr_lengths <- manhattan_data[, .(chr_len = max(ps)), by = chr]
+chr_lengths$cum_len <- cumsum(as.numeric(chr_lengths$chr_len)) - chr_lengths$chr_len
+manhattan_data <- merge(manhattan_data, chr_lengths, by = "chr")
+manhattan_data$pos_cum <- manhattan_data$ps + manhattan_data$cum_len
+
+# Axis labels for chromosomes
+axis_df <- manhattan_data[, .(center = mean(pos_cum)), by = chr]
+
+# Manhattan plot
+manhattan_data$neg_log10_p <- -manhattan_data$combined_p / log(10)
+
+
+ggplot(manhattan_data, aes(x = pos_cum, y = (neg_log10_p), color = as.factor(as.numeric(chr) %% 2))) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("#393E46", "#A78295")) +
+  scale_x_continuous(label = axis_df$chr, breaks = axis_df$center) +
+  labs(x = "Chromosome", y = "-log10(p)", title = "Manhattan Plot") +
+  theme_bw(base_size = 15 ) +
+  theme(legend.position = "none",
+        panel.border = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) 
+  #geom_hline(yintercept = -log10(5e-8), linetype = "dashed", color = "red") # Optional: genome-wide significance line
+
+
+
+## Make a qqplot
+p_sorted <- sort(manhattan_data$combined_p)
+
+# 2. Calculate expected p-values
+# Assuming manhattan_data has combined_p column (Fisher's combined p-values)
+
+# 1. First sort the p-values
+sorted_p <- sort(manhattan_data$combined_p)
+
+# 2. Calculate expected and observed correctly
+n <- length(sorted_p)
+expected <- -log10(seq(0.5/n, 1-0.5/n, length.out=n))  # expected uniform
+observed <- -log10(sorted_p)  # observed values
+
+# 3. Create dataframe for plotting
+qq_data <- data.frame(
+    expected = expected,
+    observed = observed
+)
+
+# 4. Plot with ggplot2
+ggplot(qq_data, aes(x=expected, y=observed)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1, color="red", linetype="dashed") +
+    labs(
+        x = "Expected -log10(p)",
+        y = "Observed -log10(p)",
+        title = "QQ Plot of Fisher's Combined P-values"
+    ) +
+    theme_bw()
+```
+
+
+
+
+```{r}
+# Define chromosome and region boundaries
+chr_of_interest <- "3"
+start_pos <- 201887-40000
+end_pos <- 208250+40000
+
+# Subset the data for the chromosome and region
+manhattan_zoom <- subset(
+  manhattan_data,
+  chr == chr_of_interest & ps >= start_pos & ps <= end_pos
+)
+
+# Plot
+ggplot(manhattan_zoom, aes(x = ps, y = neg_log10_p)) +
+  geom_point(size = 1, color = "#393E46") +
+  labs(
+    x = paste("Position on Chromosome", chr_of_interest),
+    y = "-log10(p)",
+    title = paste("Manhattan Plot: Chr", chr_of_interest, "Region", start_pos, "-", end_pos)
+  ) +
+  theme_bw(base_size = 15) +
+  theme(
+    legend.position = "none",
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  )
+```
+
+
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(data.table)
+
+# Ensure chr is a factor and ordered
+individual_tes_gwas_combined[, chr := as.factor(chr)]
+setorder(individual_tes_gwas_combined, chr, ps)
+
+# Calculate cumulative position
+chr_lengths <- individual_tes_gwas_combined[, .(chr_len = max(ps)), by = chr]
+chr_lengths[, chr_start := c(0, cumsum(chr_len)[-length(chr_len)])]
+
+# Merge start positions into main table
+individual_tes_gwas_combined <- merge(individual_tes_gwas_combined, chr_lengths[, .(chr, chr_start)], by = "chr")
+individual_tes_gwas_combined[, cum_pos := ps + chr_start]
+
+# Calculate chromosome centers for x-axis labels
+axis_df <- individual_tes_gwas_combined[, .(center = mean(cum_pos)), by = chr]
+
+# Manhattan plot with chromosomes separated
+ggplot(individual_tes_gwas_combined, aes(x = cum_pos, y = -log10(combined_p), color = chr)) +
+  geom_point(size = 0.8) +
+  scale_color_manual(values = rep(c("#386cb0", "#fdb462"), length(unique(individual_tes_gwas_combined$chr)))) +
+  scale_x_continuous(label = axis_df$chr, breaks = axis_df$center) +
+  #geom_hline(yintercept = -log10(5e-8), linetype = "dashed", color = "red") +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  ) +
+  labs(
+    x = "Chromosome",
+    y = "-log10(p-value)",
+    title = "Manhattan Plot of Combined P-values"
+  )
+```
+
+```{r}
+# Connect to the plants mart and select the Arabidopsis thaliana dataset
+plants_mart <- useMart("plants_mart", host = "plants.ensembl.org")
+tair10 <- biomaRt::useDataset("athaliana_eg_gene", mart = plants_mart)
+
+# Retrieve gene annotation data
+annotation_tair10 <- getBM(
+  attributes = c(
+    "chromosome_name",
+    "start_position",
+    "end_position",
+    "gene_biotype",
+    "ensembl_gene_id",
+    "external_gene_name",
+    "description"
+  ),
+  mart = tair10
+)
+
+# Remove "Chr" prefix if present
+annotation_tair10$chromosome_name <- gsub("Chr", "", annotation_tair10$chromosome_name)
+```
+
+## Map to the genes 
+```{r}
+
+manhattan_data$neg_log10_p <- as.numeric(manhattan_data$neg_log10_p)
+significant_snps <-manhattan_data[manhattan_data$neg_log10_p>100,]
+```
+
+```{r}
+max_upstream_distance <- 100  # Adjust as necessary
+max_downstream_distance <- 100  # Adjust as necessary
+snps_near_genes <- vector("list", length = nrow(significant_snps))
+# Loop through each SNP to find if it's inside, upstream, or downstream of any gene
+for (i in 1:nrow(significant_snps)) {
+  snp <- significant_snps[i, ]
+  genes_on_chr <- annotation_tair10[annotation_tair10$chromosome_name == snp$chr, ]
+  is_near_or_inside_gene <- (genes_on_chr$start_position - max_upstream_distance <= snp$ps & snp$ps <= genes_on_chr$end_position + max_downstream_distance) |
+    (genes_on_chr$start_position <= snp$ps & snp$ps <= genes_on_chr$end_position)
+  
+  if (any(is_near_or_inside_gene)) {
+    temp_df <- genes_on_chr[is_near_or_inside_gene, ]
+    temp_df$snp_position <- snp$ps
+    temp_df$chromosome <- snp$chr 
+    #temp_df$af <- snp$af
+    #temp_df$variance_explained <- snp$r_squared
+    temp_df$pval <- -log10(snp$neg_log10_p)
+    snps_near_genes[[i]] <- temp_df
+  } else {
+    snps_near_genes[[i]] <- NULL
+  }
+}
+
+snps_near_genes_df <- do.call(rbind, lapply(snps_near_genes, function(df) {
+  if (is.null(df)) return(NULL)
+  df
+}))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

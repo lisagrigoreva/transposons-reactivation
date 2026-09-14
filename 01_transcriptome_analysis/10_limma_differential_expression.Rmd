@@ -1,0 +1,743 @@
+---
+title: "006_rsem_quantification"
+output: html_document
+date: "2024-08-20"
+---
+# Load libraries 
+```{r setup, include=FALSE}
+library(tximport) 
+library(BiocParallel)
+library(dplyr)
+library(tidyverse)
+library(reshape2) 
+library(edgeR)
+library(limma)
+library(ggrepel)
+```
+
+```{r}
+sampledata<- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/ddm1_crosses_metadata_2repl_filtered_num_reads_mapping_rate_filtered_outliers_by_pca.txt",header=T, sep=",")
+```
+## Read samples ##
+## Import rsem
+```{r}
+library(tximport)
+
+# Base directory for RSEM outputs
+rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/005_quant/rsem/sense"
+
+# Dynamically construct paths for each sample
+sample_paths <- file.path(rsem_base_dir)
+
+# List all .isoforms.results files
+files <- file.path(sample_paths, paste0(sampledata$Sample_id, ".genes.results"))
+
+# Check which files exist
+existing_files <- files[file.exists(files)]
+
+# Extract sample IDs - THIS IS THE FIX
+# Get the sample IDs from sampledata_version3 that correspond to existing files
+file_indices <- which(file.exists(files))
+fileSampleIDs <- sampledata$Sample_id[file_indices]
+
+# Create a named vector for tximport with proper sample IDs
+names(existing_files) <- fileSampleIDs
+
+# Verify the names are correct
+head(names(existing_files))
+
+# Perform tximport for RSEM quantification
+txi.rsem <- tximport(existing_files, type = "rsem")
+
+# Check column names now
+head(colnames(txi.rsem$counts))
+dim(txi.rsem$counts)
+
+# Filter sampledata 
+filteredSampleData <- sampledata[sampledata$Sample_id %in% fileSampleIDs, ]
+rownames(filteredSampleData) <- filteredSampleData$Sample_id
+
+# Subset txi.rsem
+sampleNames <- rownames(filteredSampleData)
+
+# Subset the txi.rsem object
+txi.rsem$counts <- txi.rsem$counts[, sampleNames, drop = FALSE]
+txi.rsem$abundance <- txi.rsem$abundance[, sampleNames, drop = FALSE]
+txi.rsem$length <- txi.rsem$length[, sampleNames, drop = FALSE]
+
+# Now extract counts
+counts <- txi.rsem$counts
+rownames(counts) <-rownames(txi.rsem$counts)
+dim(counts)
+```
+#### Filtering ### 
+```{r}
+library(edgeR)
+
+colnames(counts) <- (paste(filteredSampleData$Genotype, 
+                                     filteredSampleData$Accession, 
+                                     filteredSampleData$Replicate,
+                                     filteredSampleData$Request_id,filteredSampleData$Sample_id, sep="_"))
+# Define variant 
+variant <- factor(filteredSampleData$Variant)
+genotype <- factor(filteredSampleData$Genotype)
+# Remove all-zero genes
+
+#d0 <- d0[rowSums(d0$counts) > 0, ]
+d0 <- DGEList(counts = counts, group = genotype)
+# Define ddm1 samples
+ddm1_samples <- which(d0$samples$group == "ddm1_ct")
+# Keep TEs with >= 10 counts in ddm1 samples
+keep <- rowSums(d0$counts[, ddm1_samples]) >= 10
+# Filter once
+d0_filtered <- d0[keep, , keep.lib.sizes = FALSE]
+# Normalize
+d0_filtered <- calcNormFactors(d0_filtered, method = "TMM")
+
+# Print summary
+cat("Total genes before filtering:", nrow(d0), "\n")
+cat("Genes retained after filtering:", nrow(d0_filtered), "\n")
+cat("Percentage retained:", round(nrow(d0_filtered)/nrow(d0)*100, 1), "%\n")
+
+# Before filtering
+log_cpm_before <- cpm(d0, log=TRUE)
+# After filtering
+log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=TRUE)
+log_cpm_after_manual <- log2(log_cpm_after_manual+1)
+log_cpm_after <- log_cpm_after_manual
+# Plot density distributions
+par(mfrow=c(1,2))
+plot(density(log_cpm_before), main="Before filtering", xlab="log2 counts")
+plot(density((log_cpm_after)), main="After filtering", xlab="log2 counts")
+```
+####################LIMMA####################
+####Common  effect based on Col0####
+## Capture accession specific  effect 
+############################################
+```{r}
+# Create factors 
+filteredSampleData$Sequencing_date <- as.factor(filteredSampleData$Sequencing_date)
+filteredSampleData$Genotype <- as.factor(filteredSampleData$Genotype)
+filteredSampleData$replicate <- as.factor(filteredSampleData$Replicate)
+filteredSampleData$Request_id <- as.factor(filteredSampleData$Request_id)
+# Set ct_col_6909 as reference for contrasts
+filteredSampleData$Genotype <- relevel(filteredSampleData$Genotype, "ct_col")
+
+#  Design, voom, and fit
+design <- model.matrix(~ 0 + Genotype + Sequencing_date+replicate, data = filteredSampleData)
+# Apply model and make a plot 
+y <- voom(d0_filtered, design, plot = TRUE)
+fit <- lmFit(y, design)
+
+# Contrast: F1 ddm1 - F1 Col 
+contr <- makeContrasts(ddm1_vs_col = Genotypeddm1_ct- Genotypect_col,
+                       levels = design)
+fit2 <- contrasts.fit(fit, contr)
+fit2 <- eBayes(fit2)
+res <- topTable(fit2, coef = "ddm1_vs_col", number = Inf, adjust.method = "BH")
+#Mark significant subset of TE
+res$gene <- rownames(res)
+res$significant <- with(res, adj.P.Val <= 0.05 & logFC >= 1)
+
+tes <- !grepl("AT[1-9]TE", rownames(res)) ##### Select TEs
+res_sig_tes <- res[res$significant & tes, ]
+
+# 7) Volcano
+library(ggplot2)
+ggplot(res, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  labs(title = "F1 ddm1 vs F1 Col — limma+voom",
+       x = "log2 Fold Change", y = "-log10 adjusted p`-value") +
+  theme_minimal(base_size = 15)+ylim(0,50)
+```
+
+
+## Select only genes 
+```{r}
+```
+
+
+```{r}
+## Visualize dream complex genes 
+library(ComplexHeatmap)
+library(grid)
+
+# Clean gene list (remove accidental whitespace/tabs)
+genes_of_interest <- "AT5G49160"
+
+genes_of_interest <- c(
+  "AT3G12280", "AT2G36010", "AT5G22220", "AT1G47870", "AT3G48160",
+  "AT5G14960", "AT3G01330", "AT5G02470", "AT5G03415", "AT4G32730",
+  "AT4G00540", "AT3G09370", "AT5G11510", "AT5G02320", "AT3G22780",
+  "AT4G14770", "AT5G27610", "AT3G05380", "AT3G21430"
+)
+
+# Subset matrix using %in% for exact matching
+log_cpm_batchCorrected_genes_of_interest <- log_cpm_after_manual[
+  rownames(log_cpm_after_manual) %in% genes_of_interest, 
+  , drop = FALSE  # <-- prevents dimension drop when only 1 row matches
+]
+
+# Select only control columns
+# Use names() instead of colnames()
+log_cpm_controls <- log_cpm_batchCorrected_genes_of_interest[,
+  grepl("ddm1_ct|ct_col|F1_ddm1_6909", 
+        colnames(log_cpm_batchCorrected_genes_of_interest)),
+  drop = FALSE
+]
+
+# Heatmap
+Heatmap(
+(log_cpm_controls),
+  name = "log2 CPM",
+  cluster_columns = TRUE,
+  cluster_rows = TRUE,
+  clustering_distance_columns = "euclidean",
+  clustering_distance_rows = "euclidean",
+  column_km = 1,              # ← split columns into 3 clusters
+  column_km_repeats = 1000,
+  row_km = 3,                 # ← split rows into 2 clusters
+  row_km_repeats = 1000,
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  column_names_gp = gpar(fontsize = 8),
+  row_names_gp = gpar(fontsize = 8),
+  heatmap_legend_param = list(
+    title = "log2 CPM",
+    title_gp = gpar(fontsize = 13),
+    labels_gp = gpar(fontsize = 13)
+  )
+)
+
+
+## Order alphabetilcally
+
+# Sort columns alphabetically
+log_cpm_controls <- log_cpm_controls[, order(colnames(log_cpm_controls)), drop = FALSE]
+
+# Heatmap
+Heatmap(
+  log_cpm_controls,
+  name = "log2 CPM",
+  cluster_columns = FALSE,       # ← turn off column clustering
+  cluster_rows = TRUE,
+  clustering_distance_rows = "euclidean",
+  row_km = 3,
+  row_km_repeats = 1000,
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  column_names_gp = gpar(fontsize = 6),
+  row_names_gp = gpar(fontsize = 8),
+  heatmap_legend_param = list(
+    title = "log2 CPM",
+    title_gp = gpar(fontsize = 13),
+    labels_gp = gpar(fontsize = 13)
+  )
+)
+```
+
+
+```{r}
+# Make a long format out of the data
+long_cpm_long <- log_cpm_after %>%
+  as.data.frame() %>%
+  rownames_to_column("id") %>%
+  pivot_longer(
+    cols = -id,
+    names_to = "sample_id",
+    values_to = "log2cpm"
+  )
+
+# Extract metadata
+setDT(long_cpm_long)
+long_cpm_long[, `:=`(
+  genotype = fcase(
+    grepl("F1_Col", sample_id),  "Col",
+    grepl("F1_ddm1", sample_id), "ddm1",
+    grepl("ct_col", sample_id),  "ct_col",
+    grepl("ddm1_ct", sample_id), "ddm1_ct"
+  ),
+  accession  = sub("^(?:[^_]+_){2}([^_]+).*", "\\1", sample_id),
+  plate      = sub("^(?:[^_]*_){4}([^_]+).*", "\\1", sample_id),
+  replicate  = sub("^(?:[^_]+_){3}([^_]+)_.*", "\\1", sample_id),
+  sample     = sub(".*_([^_]+)$", "\\1", sample_id)
+)]
+
+
+long_cpm_long$sample <- as.numeric(long_cpm_long$sample)
+# Select differentially expressed TEs
+long_cpm_long_te_significant <- long_cpm_long[long_cpm_long$id %in% res_sig_tes$gene,]
+long_cpm_long_te_significant$id <- paste0("AS_", long_cpm_long_te_significant$id)
+fwrite(long_cpm_long_te_significant, "/groups/nordborg/projects/ddm1_resilencing/04_output/limma_output/anti_sense_expr_te_sig_logfcmorethan1_padj_less_005_min10reads_ddm1_ct_log2cpm_normalization.csv")
+```
+
+
+
+## write output dataframe
+
+```{r}
+library(data.table)
+# Create a metadata to add
+filteredSampleData_essential <- filteredSampleData %>% select(Sample_id,Genotype,Sequencing_date,Plate_position,Set,Number_of_reads,Accession)
+# Read additional metadata
+metadata <- fread("/groups/nordborg/projects/ddm1_resilencing/10_metadata/metainformtaion_accessions.txt") %>% select(accession_ID,Admixture_Groupe,country,longitude,latitude)
+# Join dataframe
+filteredSampleData_essential <- left_join(filteredSampleData_essential,metadata,by=c("Accession"="accession_ID"))
+```
+
+
+
+
+####################LIMMA####################
+####Common  effect based on Col0####
+## Capture accession specific  effect 
+############################################
+```{r}
+# Create factors 
+filteredSampleData$Sequencing_date <- as.factor(filteredSampleData$Sequencing_date)
+filteredSampleData$Genotype <- as.factor(filteredSampleData$Genotype)
+filteredSampleData$replicate <- as.factor(filteredSampleData$Replicate)
+filteredSampleData$Request_id <- as.factor(filteredSampleData$Request_id)
+# Set ct_col_6909 as reference for contrasts
+filteredSampleData$Genotype <- relevel(filteredSampleData$Genotype, "ct_col")
+
+#  Design, voom, and fit
+design <- model.matrix(~ 0 + Genotype + Sequencing_date+replicate, data = filteredSampleData)
+# Apply model and make a plot 
+y <- voom(d0_filtered, design, plot = TRUE)
+fit <- lmFit(y, design)
+
+
+# Contrast: F1 ddm1 - F1 Col 
+contr <- makeContrasts(ddm1_vs_col = Genotypeddm1_ct- Genotypect_col,
+                       levels = design)
+fit2 <- contrasts.fit(fit, contr)
+fit2 <- eBayes(fit2)
+res <- topTable(fit2, coef = "ddm1_vs_col", number = Inf, adjust.method = "BH")
+#Mark significant subset of TE
+res$gene <- rownames(res)
+res$significant <- with(res, adj.P.Val <= 0.05 & logFC >= 1)
+tes_mask <- !grepl("AT[1-9]TE", rownames(res)) ##### ACHTUNG. TE or genes?
+res_sig_tes <- res[res$significant & tes_mask, ]
+
+# 7) Volcano
+library(ggplot2)
+ggplot(res, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  labs(title = "F1 ddm1 vs F1 Col — limma+voom",
+       x = "log2 Fold Change", y = "-log10 adjusted p`-value") +
+  theme_minimal(base_size = 15)+ylim(0,50)
+```
+
+
+## Find genes which overlap with TEs
+```{r}
+library(rtracklayer)
+gtf <- import("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")
+# Get genes
+# subset by type and strand
+genes_sense <- gtf[gtf$type == "gene" & strand(gtf) == "+" ]
+genes_antisense <- gtf[gtf$type == "gene" & strand(gtf) == "-"]
+# Get transposons 
+te_sense <- gtf[gtf$type == "transposable_element" & strand(gtf) == "+" ]
+te_antisense <- gtf[gtf$type == "transposable_element" & strand(gtf) == "-"]
+
+# Filter TEs
+# Sense TEs PCG in the same otientation 
+# Anti-sense Tes overlaping PCG in the opposite orientation
+library(GenomicRanges)
+
+# Find overlaps
+# Sense TEs overlapping sense genes (same orientation = artifact)
+sense_overlaps <- findOverlaps(te_sense, genes_sense)
+filtered_te_sense <- te_sense[queryHits(sense_overlaps)]
+
+sense_overlaps_genes <- findOverlaps(genes_sense, te_sense)
+filtered_genes_sense <- genes_sense[queryHits(sense_overlaps_genes)]
+
+# Antisense TEs overlapping antisense genes (opposite orientation = artifact)
+antisense_overlaps <- findOverlaps(te_antisense, genes_sense,ignore.strand = TRUE)
+filtered_te_antisense <- te_antisense[queryHits(antisense_overlaps)]
+
+antisense_overlaps_genes <- findOverlaps(genes_sense, te_antisense)
+filtered_genes_antisense <- genes_sense[queryHits(antisense_overlaps_genes)]
+
+# Convert to dataframe
+filtered_te_sense_df <- as.data.frame(filtered_te_sense) %>%
+  dplyr::select(ID, seqnames, start, end, strand) %>%
+  distinct(ID, .keep_all = TRUE)
+
+filtered_te_antisense_df <- as.data.frame(filtered_te_antisense) %>%
+  dplyr::select(ID, seqnames, start, end, strand) %>%
+  distinct(ID, .keep_all = TRUE)
+
+filtered_te_antisense_df$ID <- paste(filtered_te_antisense_df$ID,"AS", sep="_")
+# Combine
+filtered_TEs <- bind_rows(filtered_te_sense_df, filtered_te_antisense_df)
+
+
+## Genes
+filtered_genes_sense_df <- as.data.frame(filtered_genes_sense) %>%
+  dplyr::select(ID, seqnames, start, end, strand) %>%
+  distinct(ID, .keep_all = TRUE)
+```
+
+```{r}
+# Filter TEs 
+# Check overlap
+#rownames(res_sig_tes) <- paste(rownames(res_sig_tes), "AS",sep="_")
+summary(rownames(res_sig_tes) %in% filtered_genes_sense_df$ID)
+# Filter OUT TEs that overlap PCGs
+res_sig_tes <- res_sig_tes[!rownames(res_sig_tes) %in% filtered_genes_sense_df$ID, ]
+```
+
+### Heatmap of the not intersecting genes 
+```{r}
+library(ComplexHeatmap)
+## Make a heaatmap based on the differentially expressed genes
+tes <- !grepl("AT[1-9]TE", rownames(log_cpm_after_manual))
+# Extract TEss
+log_cpm_batchCorrected_tes <- log_cpm_after_manual[tes,]
+## Select only significant TEs
+
+#rownames(log_cpm_after_manual) <- paste(rownames(log_cpm_after_manual), "AS",sep="_")
+
+significant_tes <- rownames(log_cpm_after_manual) %in% rownames(res_sig_tes)
+log_cpm_batchCorrected_tes_sig <- log_cpm_after_manual[significant_tes, ]
+
+log_cpm_controls <- log_cpm_batchCorrected_tes_sig[, grepl("ddm1_ct|ct_col|F1_ddm1_6909", colnames(log_cpm_batchCorrected_tes_sig))]
+##Heatmap
+Heatmap(
+      log_cpm_controls,  # Changed from union_results to z_scaled_matrix
+      name = "log2(counts)",  # Removed plate variable
+      cluster_columns = TRUE,
+      cluster_rows = TRUE,
+      clustering_distance_columns = "euclidean",
+      show_column_names = TRUE,
+      show_row_names = FALSE,
+      show_heatmap_legend = TRUE,
+      row_km = 1,
+      row_km_repeats = 1000,
+      column_km_repeats = 1000,
+      column_km = 2,
+      #column_split = TRUE,
+      column_names_gp = gpar(fontsize = 5),
+      row_names_gp = gpar(fontsize = 5),
+      heatmap_legend_param = list(
+        title_gp = gpar(fontsize = 13),
+        labels_gp = gpar(fontsize = 13)))
+```
+
+## Check presence in CMT2 dataset 
+```{r}
+log_cpm_batchCorrected_tes_sig
+
+cdca7tes1 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+cdca7tes2 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_2_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+cdca7tes_union <- full_join(cdca7tes1,cdca7tes2)
+
+
+pilot_experiment <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/pilot_experiment_upregulated/F1_vs_ddm1_14_TEs_down_min_4_fold.tsv", sep="\t")
+
+pilot_experiment2 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/upTEs/ddm1_1st_7th_ribozero_STAR_4-5w_leaves/ddm1_G1_vs_Col0_upTEs.tsv", sep="\t")
+
+previous_res <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/expr_tes_genes_counts_log2_f1_ddm1_col0_defined_log2_manual_batch_effect_corrected_replicate_in_te_model.csv", sep=";")
+
+```
+## Check intersection with the other datasets 
+```{r}
+# Install if needed
+#install.packages("eulerr")
+library(eulerr)
+
+# Create  gene sets
+set1 <- rownames(res_sig_tes)
+set2 <- pilot_experiment$AT1TE09080
+# Remove duplicates from each set
+venn_list <- list(
+    "Significant TEs" = unique(set1),
+    "previous result" = unique(set2)
+)
+
+# Create proportional Euler diagram
+fit <- euler(venn_list)
+
+# Plot
+plot(fit,
+     fills = c("#5C5470", "darkorange"),
+     alpha = 0.5,
+     quantities = TRUE,
+     labels = list(font = 2, cex = 1.2),
+     edges = list(col = "white", lwd = 2))
+
+```
+## Write as an output
+```{r}
+## Raw values
+log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=TRUE)
+tes <- !grepl("AT[1-9]TE", rownames(log_cpm_after_manual))
+# Extract TEss
+log_cpm_after_manual_tes <- log_cpm_after_manual[tes,]
+## Select only significant TEs
+#rownames(log_cpm_after_manual_tes) <- paste(rownames(log_cpm_after_manual_tes), "AS",sep="_")
+
+significant_tes <- rownames(log_cpm_after_manual_tes) %in% rownames(res_sig_tes)
+log_cpm_after_manual_tes_sig <- log_cpm_after_manual_tes[significant_tes, ]
+
+
+##Write as an output
+write.csv2(log_cpm_after_manual_tes_sig, "/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_GENES_and_TE_genes.csv", quote = F)
+```
+
+
+
+####################LIMMA####################
+####Accession specific effect based on Col0####
+## Capture accession specific  effect 
+############################################
+
+
+```{r}
+# Define the subset by metadata 
+# Keep genotypes of interest and accession 6909
+#####################
+###OLD DON'T USE####
+#####################
+keep_samps <- with(filteredSampleData,
+                   Genotype %in% c("ct_col", "F1_ddm1") & Accession == 6909)
+
+# Subset DGEList and metadata in the same order
+d1 <- d0_filtered[, keep_samps, keep.lib.sizes = FALSE]
+filteredSampleData$sample <- (paste(filteredSampleData$Genotype, 
+                                     filteredSampleData$Accession, 
+                                     filteredSampleData$Replicate,
+                                     filteredSampleData$Request_id,filteredSampleData$Sample_id, sep="_"))
+sd <- droplevels(filteredSampleData[keep_samps, ])
+
+stopifnot(identical(colnames(d1), sd$sample))
+
+# Batch and group factors
+sd$Sequencing.date <- factor(gsub("-", "_", sd$Sequencing.date))
+sd$group <- factor(paste(sd$Genotype, sd$Accession, sep = "_"))
+sd$replicate <- factor(sd$Replicate)
+# Set ct_col_6909 as reference for contrasts
+if ("ct_col_6909" %in% levels(sd$group)) {
+  sd$group <- relevel(sd$group, "ct_col_6909")
+}
+
+# 3) Re-filter for expression on the final sample set (important)
+keep2 <- filterByExpr(d1, group = sd$group)
+d1 <- d1[keep2, , keep.lib.sizes = FALSE]
+d1 <- calcNormFactors(d1)
+d0_filtered
+#  Design, voom, and fit
+design <- model.matrix(~ 0 + group + Sequencing.date+replicate, data = sd)
+# If sample quality varies, consider voomWithQualityWeights(d1, design, plot = TRUE)
+y <- voom(d1, design, plot = TRUE)
+fit <- lmFit(y, design)
+
+# Contrast: ddm1_ct_6909 vs ct_col_6909
+contr <- makeContrasts(ddm1_vs_col = groupct_ddm1_6909_s_6909 - groupct_col_6909,
+                       levels = design)
+fit2 <- contrasts.fit(fit, contr)
+# You can use eBayes, or use treat to test against a fold-change threshold
+fit2 <- eBayes(fit2)
+# fit2 <- treat(fit2, lfc = log2(2))  # optional: test |log2FC| >= 1
+
+res <- topTable(fit2, coef = "ddm1_vs_col", number = Inf, adjust.method = "BH")
+
+# 6) Mark significant and (optional) TE-only subset
+res$gene <- rownames(res)
+res$significant <- with(res, adj.P.Val < 0.05 & logFC > 1)
+tes_mask <- grepl("AT[1-9]TE", rownames(res))
+res_sig_tes <- res[res$significant & tes_mask, ]
+
+# 7) Volcano
+library(ggplot2)
+ggplot(res, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  labs(title = "ddm1_ct vs ct_col (Accession 6909) — limma+voom",
+       x = "log2 Fold Change", y = "-log10 adjusted p-value") +
+  theme_minimal(base_size = 15)
+
+```
+
+
+
+```{r}
+# Contrast: F1 ddm1 - F1 Col 
+contr <- makeContrasts(ddm1_vs_col = Genotypeddm1_ct- Genotypect_col,
+                       levels = design)
+fit2 <- contrasts.fit(fit, contr)
+# You can use eBayes, or use treat to test against a fold-change threshold
+fit2 <- eBayes(fit2)
+# fit2 <- treat(fit2, lfc = log2(2))  # optional: test |log2FC| >= 1
+
+res <- topTable(fit2, coef = "ddm1_vs_col", number = Inf, adjust.method = "BH")
+
+# 6) Mark significant and (optional) TE-only subset
+res$gene <- rownames(res)
+res$significant <- with(res, adj.P.Val < 0.05 & logFC > 2)
+tes_mask <- grepl("AT[1-9]TE", rownames(res))
+res_sig_tes <- res[res$significant & tes_mask, ]
+
+# 7) Volcano
+library(ggplot2)
+ggplot(res, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  labs(title = "F1 ddm1 vs F1 Col — limma+voom",
+       x = "log2 Fold Change", y = "-log10 adjusted p-value") +
+  theme_minimal(base_size = 15)+ylim(0,50)
+```
+
+### Get normilized expression matrix 
+```{r}
+library(ComplexHeatmap)
+## Make a heaatmap based on the differentially expressed genes
+tes <- grepl("AT[1-9]TE", rownames(log_cpm_after_manual))
+# Extract TEss
+log_cpm_batchCorrected_tes <- log_cpm_after_manual[tes,]
+## Select only significant TEs
+
+
+significant_tes <- rownames(log_cpm_after_manual) %in% rownames(res_sig_tes)
+log_cpm_batchCorrected_tes_sig <- log_cpm_after_manual[significant_tes, ]
+
+##Heatmap
+Heatmap(
+      log_cpm_batchCorrected_tes_sig, 
+      name = "log2(counts)",  # Removed plate variable
+      cluster_columns = TRUE,
+      cluster_rows = TRUE,
+      clustering_distance_columns = "euclidean",
+      show_column_names = FALSE,
+      show_row_names = FALSE,
+      show_heatmap_legend = TRUE,
+      row_km = 1,
+      row_km_repeats = 1000,
+      column_km_repeats = 1000,
+      column_km = 2,
+      #column_split = TRUE,
+      column_names_gp = gpar(fontsize = 5),
+      row_names_gp = gpar(fontsize = 5),
+      heatmap_legend_param = list(
+        title_gp = gpar(fontsize = 13),
+        labels_gp = gpar(fontsize = 13)))
+```
+## Find genes which overlap with TEs
+```{r}
+library(rtracklayer)
+gtf <- import("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")
+# Get genes
+# subset by type and strand
+genes_sense <- gtf[gtf$type == "gene" & strand(gtf) == "+" ]
+genes_antisense <- gtf[gtf$type == "gene" & strand(gtf) == "-"]
+# Get transposons 
+te_sense <- gtf[gtf$type == "transposable_element" & strand(gtf) == "+" ]
+te_antisense <- gtf[gtf$type == "transposable_element" & strand(gtf) == "-"]
+
+# Filter TEs
+# Sense TEs PCG in the same otientation 
+# Anti-sense Tes overlaping PCG in the opposite orientation
+library(GenomicRanges)
+
+# Find overlaps
+# Sense TEs overlapping sense genes (same orientation = artifact)
+sense_overlaps <- findOverlaps(te_sense, genes_sense)
+filtered_te_sense <- te_sense[queryHits(sense_overlaps)]
+
+# Antisense TEs overlapping antisense genes (opposite orientation = artifact)
+antisense_overlaps <- findOverlaps(te_antisense, genes_antisense)
+filtered_te_antisense <- te_antisense[queryHits(antisense_overlaps)]
+
+# Convert to dataframe
+filtered_te_sense_df <- as.data.frame(filtered_te_sense) %>%
+  dplyr::select(ID, seqnames, start, end, strand) %>%
+  distinct(ID, .keep_all = TRUE)
+
+filtered_te_antisense_df <- as.data.frame(filtered_te_antisense) %>%
+  dplyr::select(ID, seqnames, start, end, strand) %>%
+  distinct(ID, .keep_all = TRUE)
+
+# Combine
+filtered_TEs <- bind_rows(filtered_te_sense_df, filtered_te_antisense_df)
+```
+# Filter TEs 
+```{r}
+summary(rownames(res_sig_tes) %in% filtered_TEs$ID)
+```
+
+## Check presence in CMT2 dataset 
+```{r}
+log_cpm_batchCorrected_tes_sig
+
+cdca7tes1 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_1_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+cdca7tes2 <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/cdca7tes/cdca7ab_2_vs_Col_0_up_TEs_VST.tsv", sep="\t")
+cdca7tes_union <- full_join(cdca7tes1,cdca7tes2)
+
+
+pilot_experiment <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/pilot_experiment_upregulated/F1_vs_ddm1_14_TEs_down_min_4_fold.tsv", sep="\t")
+
+gene_set <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/upTEs/ddm1_1st_7th_ribozero_STAR_4-5w_leaves/ddm1_G1_vs_Col0_upTEs.tsv", sep="\t")
+
+```
+## Check intersection with the other datasets 
+```{r}
+# Install if needed
+#install.packages("eulerr")
+library(eulerr)
+
+# Create  gene sets
+set1 <- rownames(res_sig_tes)
+set2 <- pilot_experiment$AT1TE09080
+cdca7tes_union$Geneid <- gsub("_AS", "", cdca7tes_union$Geneid)
+# Remove duplicates from each set
+venn_list <- list(
+    "Significant TEs" = unique(set1),
+    "CDCA7 TEs" = unique(set2)
+)
+
+# Create proportional Euler diagram
+fit <- euler(venn_list)
+
+# Plot
+plot(fit,
+     fills = c("#5C5470", "darkorange"),
+     alpha = 0.5,
+     quantities = TRUE,
+     labels = list(font = 2, cex = 1.2),
+     edges = list(col = "white", lwd = 2))
+
+```
+## Write as an output
+```{r}
+## Raw values
+log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=TRUE)
+tes <- grepl("AT[1-9]TE", rownames(log_cpm_after_manual))
+# Extract TEss
+log_cpm_after_manual_tes <- log_cpm_after_manual[tes,]
+## Select only significant TEs
+significant_tes <- rownames(log_cpm_after_manual_tes) %in% rownames(res_sig_tes)
+log_cpm_after_manual_tes_sig <- log_cpm_after_manual_tes[significant_tes, ]
+
+
+##Write as an output
+write.csv2(log_cpm_after_manual_tes_sig, "/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr.csv", quote = F)
+```
+
+
+
+
+

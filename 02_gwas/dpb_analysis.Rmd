@@ -1,0 +1,392 @@
+---
+title: "gwas"
+output: html_document
+date: "2026-04-28"
+---
+
+```{r setup, include=FALSE}
+# Read Gemma GWAS 
+library(data.table)
+gemma_res <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average_te_genes_intersect_tes/log2/with_K/rddm_average_ddm1_log2_maf005.assoc.txt" ,header=T)
+```
+## Visualize DPB 
+```{r}
+library(qqman)
+bonferroni_threshold <- 0.05/nrow(gemma_res)
+par(mar = c(5, 5, 2, 2))  # Adjust margins to give more space
+qq(gemma_res$p_wald, 
+   cex.axis = 2, 
+   cex.lab = 2)
+
+
+par(mar = c(5, 5, 4, 2))  # Increase left margin (second value)
+manhattan(gemma_res, chr = "chr", bp = "ps", snp = "rs", p = "p_wald", 
+         col = c("#1A1A1A", "#838B8B"), genomewideline = F, suggestiveline = F,
+         ylim = c(0, 10), cex.axis = 2, cex.lab = 1.8,
+         xlab = "Chromosome", ylab = expression(-log[10](P)))
+abline(h = 7.5, col = "red", lty = 2)
+abline(h = -log10(bonferroni_threshold), col = "black", lty = 2)
+#text(x = 3, y = 11, labels = "F1 ddm1 BLUPs - F1 Col BLUPs,st values;LTR_Copia", cex = 1.5, col = "black", pos = 4)
+
+gemma_res[order(-log10(gemma_res$p_wald), na.last = TRUE,decreasing = TRUE), ]
+```
+
+```{r}
+library(dplyr)
+# Add a highlight column to gemma_res
+gemma_res$rs <- paste0("rs", gemma_res$ps, "_", gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs, chr, ps, p_wald)
+colnames(res) <- c("SNP", "CHR", "BP", "P")
+
+# Ensure CHR is numeric
+res$CHR <- as.numeric(res$CHR)
+# DBP SNPs
+snps_of_interest <- res[
+  (res$CHR == 5 & res$BP > 842289 & res$BP < 845454) 
+, ]$SNP
+
+par(mar = c(5, 6, 4, 2))
+manhattan(res,
+          cex = 1,
+          col = c("#1A1A1A", "#838B8B"),
+          highlight = snps_of_interest,
+          suggestiveline = 7.5,
+          genomewideline = FALSE,
+          ylim = c(0, 10),
+          cex.axis = 2, cex.lab = 1.8,
+          xlab = "Chromosome", ylab = expression(-log[10](P)))
+abline(h = -log10(bonferroni_threshold), col = "red", lty = 2)
+```
+
+```{r}
+gemma_res$rs <- paste0("rs", gemma_res$ps, "_", gemma_res$chr)
+res <- gemma_res %>% dplyr::select(rs, chr, ps, p_wald)
+colnames(res) <- c("SNP", "CHR", "BP", "P")
+res$CHR <- as.numeric(res$CHR)
+
+res_selected <- res[res$CHR == 5, ]
+
+snps_of_interest <- res_selected[
+  res_selected$BP > 842289 & res_selected$BP < 845454, ]$SNP
+
+manhattan(res_selected, 
+          cex = 1,    
+          highlight = snps_of_interest,
+          suggestiveline = 7.5,
+          genomewideline = FALSE,
+          xlim = c(842289 - 20000, 845454 + 20000),
+          xlab = "Chr5 842289 - 20000, 845454 + 20000",
+          ylab = expression(-log[10](P)))
+
+```
+## SNPs of interest analysis
+```{r}
+snps_of_interest <- res_selected[
+  res_selected$BP > 842289 & res_selected$BP < 845454, ]
+snps_of_interest$P <- -log10(snps_of_interest$P)
+## Add beta for each SNP 
+```
+
+```{r}
+library(vcfR)
+library(tidyverse)
+
+vcf <- read.vcfR("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/dbp/dpb_region.vcf.gz")
+
+# Extract genotype matrix (0/0, 0/1, 1/0,1/1 → 0, 1,1, 2)
+geno <- extract.gt(vcf, element = "GT", as.numeric = FALSE)
+
+# Convert to dosage (0/0=0, 0/1=1, 1/1=2)
+geno_dosage <- apply(geno, 2, function(x) {
+  case_when(
+    x == "0/0" ~ 0,
+    x %in% c("0/1", "1/0") ~ 1,
+    x == "1/1" ~ 2,
+    TRUE ~ NA_real_
+  )
+})
+
+rownames(geno_dosage) <- paste0(vcf@fix[,"CHROM"], "_", vcf@fix[,"POS"])
+geno_dosage <- t(geno_dosage)  # individuals x SNPs
+```
+
+```{r}
+# Load phenotype
+pheno <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blup_overall_ddm1_average/log2/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam", header = FALSE)
+pheno <- pheno %>% dplyr::select(V2,V6)
+######
+#####
+colnames(pheno) <- c("individual_id", "phenotype")
+# Match individuals
+common_ids <- intersect(rownames(geno_dosage), pheno$individual_id)
+geno_sub <- geno_dosage[common_ids, ]
+pheno_sub <- pheno[pheno$individual_id %in% common_ids, ]
+
+# Linear model for each SNP
+# Align by individual ID
+pheno_sub <- pheno_sub[match(rownames(geno_sub), pheno_sub$individual_id), ]
+
+# Verify alignment
+all(rownames(geno_sub) == pheno_sub$individual_id)  # must be TRUE before proceeding
+
+# Then run the models
+results <- lapply(colnames(geno_sub), function(snp) {
+  df <- data.frame(geno = geno_sub[, snp], phenotype = pheno_sub$phenotype)
+  df <- na.omit(df)
+  # Skip SNPs with no variation
+  if (length(unique(df$geno)) < 2) {
+    return(data.frame(SNP = snp, R2 = NA, beta = NA, P = NA))
+  }
+  tryCatch({
+    fit <- lm(phenotype ~ geno, data = df)
+    data.frame(
+      SNP = snp,
+      R2 = summary(fit)$r.squared,
+      beta = coef(fit)[2],
+      P = summary(fit)$coefficients[2, 4]
+    )
+  }, error = function(e) {
+    data.frame(SNP = snp, R2 = NA, beta = NA, P = NA)
+  })
+})
+
+results_df <- do.call(rbind, results)
+results_df[order(results_df$R2, decreasing = TRUE, na.last = TRUE), ]
+results_df <- na.omit(results_df)
+
+# Step 1: Harmonize SNP names to merge
+snps_of_interest$SNP_clean <- paste0("Chr", snps_of_interest$CHR, "_", snps_of_interest$BP)
+
+# Step 2: Merge GWAS p-value into results_df
+results_df_clean <- results_df %>%
+  na.omit() %>%
+  left_join(snps_of_interest %>% dplyr::select(SNP_clean, P_gwas = P), 
+            by = c("SNP" = "SNP_clean")) %>%
+  mutate(POS = as.numeric(gsub("Chr5_", "", SNP)),
+         log10P_gwas = P_gwas)  # already -log10 from GEMMA
+
+# Step 3: Plot R2 colored by GWAS -log10(P)
+ggplot(results_df_clean, aes(x = POS, y = R2, 
+                              color = log10P_gwas, 
+                              size = log10P_gwas)) +
+  geom_point(alpha = 0.9) +
+  scale_color_gradient(low = "steelblue", high = "#C00000",
+                       name = expression(-log[10](P[GWAS]))) +
+  scale_size_continuous(range = c(2, 6), guide = "none") +
+  theme_classic(base_size = 13) +
+  labs(x = "Chr5 Position", y = expression(R^2),
+       title = "SNP R² vs phenotype, colored by GWAS significance") +
+  geom_text(data = results_df_clean[results_df_clean$R2 > 0.08, ],
+            aes(label = SNP), size = 3, vjust = -1, color = "black")
+```
+## Write genotype 
+```{r}
+geno_sub_tr <- as.data.frame(t(geno_sub))
+geno_sub_tr$snp <- rownames(geno_sub_tr)
+
+
+geno_sub_tr_selected <- geno_sub_tr[geno_sub_tr$snp=="Chr5_844294" |geno_sub_tr$snp=="Chr5_842795",]
+geno_sub_tr_selected_t <- as.data.frame(t(geno_sub_tr_selected))
+geno_sub_tr_selected_t$accession <- rownames(geno_sub_tr_selected_t)
+write.table(geno_sub_tr_selected_t, "/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/peaks_analysis/dpm_snps_top2.txt", quote = F, row.names = F)
+```
+
+
+
+```{r}
+library(ggpubr)
+library(patchwork)
+
+top2_snps <- results_df_clean %>%
+  arrange(desc(log10P_gwas)) %>%
+  slice(1:2) %>%
+  pull(SNP)
+
+plots <- lapply(top2_snps, function(snp) {
+  
+  # Prepare data
+  df_plot <- data.frame(
+    geno = geno_sub[, snp],
+    phenotype = pheno_sub$phenotype
+  ) %>%
+    na.omit() %>%
+    mutate(geno_label = factor(case_when(
+      geno == 0 ~ "ref/ref",
+      geno == 1 ~ "ref/alt",
+      geno == 2 ~ "alt/alt"
+    ), levels = c("ref/ref", "ref/alt", "alt/alt")))
+  
+  # Only compare groups that exist
+  existing <- levels(droplevels(df_plot$geno_label))
+  comparisons <- Filter(function(x) all(x %in% existing),
+                        list(c("ref/ref", "ref/alt"),
+                             c("ref/ref", "alt/alt"),
+                             c("ref/alt", "alt/alt")))
+  
+  # Labels
+  r2   <- round(results_df_clean$R2[results_df_clean$SNP == snp], 4)
+  pval <- formatC(results_df_clean$P[results_df_clean$SNP == snp], format = "e", digits = 2)
+  
+  ggplot(df_plot, aes(x = geno_label, y = phenotype, fill = geno_label)) +
+    geom_violin(trim = FALSE, alpha = 0.8) +
+    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+    geom_jitter(width = 0.05, alpha = 0.3, size = 0.8) +
+    stat_compare_means(comparisons = comparisons, method = "t.test", 
+                       label = "p.signif", bracket.size = 0.4) +
+    stat_compare_means(method = "anova", label = "p.format",
+                       label.y = max(df_plot$phenotype) * 1.3, size = 3.5) +
+    scale_fill_manual(values = c("#4472C4", "#ED7D31", "#C00000")) +
+    theme_classic(base_size = 13) +
+    labs(x = "Genotype", y = "log2(TPM)",
+         title = snp,
+         subtitle = paste0("R² = ", r2, "")) +
+    theme(legend.position = "none")
+})
+
+plots[[1]] | plots[[2]]
+```
+## Connect to real TPMs  
+```{r}
+long_data_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_sene_long_data.csv")
+long_data_anti_sense <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/ddm16909_vs_wt6909_selected_raw_fcmorethan1padjless005_batch_no_corr_filtered_ddm1ct_10readstotal_anti_sense_long_data.csv")
+# attach strand
+long_data_sense$strand <-"+"
+long_data_anti_sense$strand <-"-"
+# Combine dataframe
+long_data_anti_sense2 <- long_data_anti_sense %>%
+  mutate(TE = gsub("_AS$", "", TE))
+
+# TEs unique to each direction
+sense_only_TEs <- setdiff(long_data_sense$TE, long_data_anti_sense$TE)
+anti_only_TEs  <- setdiff(long_data_anti_sense2$TE, long_data_sense$TE)
+# Filter and combine
+long_data_combined <- bind_rows(
+  long_data_sense %>% filter(TE %in% sense_only_TEs),
+  long_data_anti_sense2 %>% filter(TE %in% anti_only_TEs)
+)
+# All TEs, not only unique 
+long_data_combined_all <- rbind(long_data_sense,long_data_anti_sense)
+```
+## Connect TPM values to the genotype 
+```{r}
+long_data_combined_all <- long_data_combined_all %>%
+  select(TE, expression_value, genotype, accession, replicate) %>%
+  filter(genotype == "ddm1") %>%
+  group_by(accession) %>%                          
+  dplyr::summarise(phenotype = mean(log2(expression_value + 1)), .groups = "drop")
+## Attach to the phenotype 
+```
+#### DBP gene structure ####
+## WHAT is the gene structure?
+```{r}
+library(biomaRt)
+mart <- useMart("plants_mart", 
+                dataset = "athaliana_eg_gene",
+                host = "https://plants.ensembl.org")
+
+# Get gene structure around your SNPs
+gene_info <- getBM(
+  attributes = c("ensembl_gene_id", "external_gene_name", 
+                 "chromosome_name", "start_position", "end_position",
+                 "strand", "gene_biotype"),
+  filters = c("chromosomal_region"),
+  values = list("5:842289:845454"),  # your region
+  mart = mart
+)
+
+```
+
+```{r}
+library(biomaRt)
+library(Gviz)
+library(GenomicRanges)
+
+mart <- useMart("plants_mart", 
+                dataset = "athaliana_eg_gene",
+                host = "https://plants.ensembl.org")
+
+# Step 1: Get transcript/exon structure
+exon_info <- getBM(
+  attributes = c("ensembl_gene_id", "ensembl_transcript_id", "external_gene_name",
+                 "chromosome_name", "exon_chrom_start", "exon_chrom_end",
+                 "rank", "strand", "5_utr_start", "5_utr_end",
+                 "3_utr_start", "3_utr_end"),
+  filters = c("chromosomal_region"),
+  values = list("5:842289:845454"),
+  mart = mart
+)
+
+
+```
+
+```{r}
+library(Gviz)
+library(GenomicRanges)
+
+gene_start <- min(exon_info$exon_chrom_start) - 1000
+gene_end   <- max(exon_info$exon_chrom_end) + 1000
+
+# Axis
+gtrack <- GenomeAxisTrack()
+
+# Gene structure
+gr <- GRanges(
+  seqnames   = "5",
+  ranges     = IRanges(start = exon_info$exon_chrom_start,
+                       end   = exon_info$exon_chrom_end),
+  strand     = "+",
+  transcript = exon_info$ensembl_transcript_id,
+  gene       = exon_info$external_gene_name,
+  exon       = paste0("exon", exon_info$rank),
+  feature    = "protein_coding"
+)
+
+grtrack <- GeneRegionTrack(gr, 
+                           name = "DPB",
+                           col = "black", fill = "grey80",
+                           transcriptAnnotation = "transcript")
+
+# SNPs
+snp_track <- AnnotationTrack(
+  GRanges("5", IRanges(c(842795, 844294), c(842795, 844294))),
+  name = "SNPs",
+  id   = c("Chr5_842795", "Chr5_844294"),
+  col  = "red", fill = "red",
+  featureAnnotation = "id",
+  fontcolor.feature = "red",
+  cex.feature = 0.7
+)
+
+# Plot
+plotTracks(list(gtrack, grtrack, snp_track),
+           chromosome = "5",
+           from = gene_start, to = gene_end,
+           background.title = "white",
+           col.title = "black",
+           col.axis = "black")
+```
+## How expression of DDM1 is correlated with phenotype?
+```{r}
+ddm1_expression <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/006_gwas/all_plates_96w/gemma_gwas/blup_gwas/blups_ddm1_individual_genes/ddm1/AT5G66740/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.selected.fam")
+ddm1_expression <- ddm1_expression %>% select(V2,V6)
+colnames(ddm1_expression) <- c("accession", "phenotype")
+ddm1_expression_with_tpms <- inner_join(ddm1_expression,long_data_combined_all, by=c("accession"), suffix=c("_ddm1", "_te_tpm") )
+
+ggplot(ddm1_expression_with_tpms, aes(phenotype_ddm1,phenotype_te_tpm))+geom_point()
+
+cor_test <- cor.test(ddm1_expression_with_tpms$phenotype_ddm1, 
+                     ddm1_expression_with_tpms$phenotype_te_tpm)
+
+ggplot(ddm1_expression_with_tpms, aes(phenotype_ddm1, phenotype_te_tpm)) +
+  geom_point(alpha = 0.8) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,
+           label = paste0("r = ", round(cor_test$estimate, 3), 
+                          "  p = ", formatC(cor_test$p.value, format = "e", digits = 2))) +
+  theme_classic() +
+  labs(x = "DDM1 TPM F1 ddm1", y = "TE TPM F1 ddm1")
+```
+
+
+
+
+

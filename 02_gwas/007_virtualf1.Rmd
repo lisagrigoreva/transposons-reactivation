@@ -1,0 +1,293 @@
+---
+title: "virtual_f1"
+output: html_document
+date: "2025-09-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Upload expression df 
+```{r}
+expression_df <- read.csv2("/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/expr_matrix_174_accessions_genes_and_tes_atleast10read_total_in5percentsamples.csv")
+expression_df$TE <- expression_df$X
+rownames(expression_df) <- expression_df$TE
+```
+## Select only controls 
+```{r}
+cn <- colnames(expression_df)
+ctrl_pat <- "F1_ddm1_6909|F1_ddm1_6909|ddm1_ct|ct_col"
+is_ctrl <- grepl(ctrl_pat, cn)
+controls <- expression_df[,is_ctrl]
+```
+
+##Make a virtual F1 for each control
+```{r}
+# Assuming your data frame is called 'matrix'
+# Extract plate information from column names
+
+controls$TE <- rownames(controls)
+expression_df<-controls
+# Check the pivot operation first
+long_data_basic <- expression_df %>%
+  mutate(gene_id = row_number()) %>%
+  pivot_longer(
+    cols = -c(TE, gene_id),
+    names_to = "sample_id",
+    values_to = "expression_value"
+  )
+
+
+## Check presense of NA 
+print("After pivot - check for NA sample_ids:")
+sum(is.na(long_data_basic$sample_id))
+
+print("Sample of basic long data:")
+head(long_data_basic)
+
+# Check empty columns 
+colnames(expression_df)[grepl("^$|^\\s*$", colnames(expression_df))]  
+
+## extract info about genotype
+# Apply mutations step by step to see where NAs are introduced
+long_data_step1 <- long_data_basic %>%
+  mutate(
+    genotype = case_when(
+      grepl("F1_Col", sample_id) ~ "Col",
+      grepl("F1_ddm1", sample_id) ~ "F1_ddm1",
+      grepl("ct_col", sample_id) ~ "ct_col",
+      grepl("ddm1_ct", sample_id) ~ "ddm1_ct",
+      sample_id == "TE" ~ "TE",
+      TRUE ~ "other"
+    )
+  )
+
+print("After genotype mutation - any new NAs?")
+sum(is.na(long_data_step1$sample_id))
+
+# Check if  regex patterns are working
+print("Sample genotype assignments:")
+table(long_data_step1$genotype, useNA = "always")
+
+## Get accession
+long_data_step1$accession <- str_extract(long_data_step1$sample_id, "(?:[^_]+_){2}([^_]+)")
+long_data_step1$accession <- gsub("F1_ddm1_", "", long_data_step1$accession)
+long_data_step1$accession <- gsub("ct_col_", "", long_data_step1$accession)
+long_data_step1$accession <- gsub("F1_Col_","", long_data_step1$accession)
+long_data_step1$accession <- gsub("ddm1_ct_","", long_data_step1$accession)
+
+## Get plate 
+# Extract the plate number from the sample_id
+long_data_step1$plate <- ifelse(
+  grepl("^ct_ddm1_6909_s_6909_", long_data_step1$sample_id), # Check if it matches the specific pattern
+  sub("^ct_ddm1_6909_s_6909_[1-9]_([^_]*)_.*", "\\1", long_data_step1$sample_id), # Extract plate for this pattern
+  sub("^(?:[^_]*_){4}([^_]*).*", "\\1", long_data_step1$sample_id) # Fallback for other patterns
+)
+#long_data_step1$plate  <- sub("^(?:[^_]*_){4}", "", long_data_step1$sample_id)
+long_data_step1 <- long_data_step1 %>%
+  mutate(replicate = str_split_fixed(sample_id, "_", 5)[,4])
+```
+## Rename plates (because we have 1882 for deep sequencing for majority of the requests, but they came from the different plates)
+```{r}
+renaming <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/correction_plates_ds.txt", header=T)
+## Correct sample ids 
+long_data_step1<- long_data_step1 %>% dplyr::mutate(Sample_id = str_extract(sample_id, "[^_]+$"))
+#Rename
+long_data_step1$plate <- ifelse(long_data_step1$Sample_id %in% renaming$Sample_id,
+                                renaming$Request_corrected[match(long_data_step1$Sample_id, renaming$Sample_id)],
+                                long_data_step1$plate)
+```
+
+## Create virtual F1
+```{r}
+ct_col <-long_data_step1[long_data_step1$genotype=="ct_col",]
+ct_col <- ct_col %>% select(plate,TE,expression_value)
+ddm1_ct <-long_data_step1[long_data_step1$genotype=="ddm1_ct",]
+ddm1_ct <- ddm1_ct %>% select(plate,TE,expression_value)
+F1_ddm1 <-long_data_step1[long_data_step1$genotype=="F1_ddm1",]
+F1_ddm1 <- F1_ddm1 %>% select(plate,TE,expression_value)
+##Make virtual F1
+library(dplyr)
+
+virtual_f1 <- inner_join(ct_col, ddm1_ct,
+                         by = c("plate", "TE"),
+                         suffix = c("_ct", "_ddm1"))
+
+F1_ddm1_clean    <- distinct(F1_ddm1, plate, TE, .keep_all = TRUE) ## Remove duplicates 
+
+
+F1_ddm1_clean <- F1_ddm1 %>%
+  group_by(plate, TE) %>%
+  summarise(expression_value = mean(expression_value, na.rm = TRUE),
+            .groups = 'drop')
+
+## Extract TEs 
+tes <- grepl("AT[1-9]TE", virtual_f1$TE)
+expression_df_tes <-virtual_f1[tes,]
+
+virtual_f1$virutal_f1 <- (virtual_f1$expression_value_ct+virtual_f1$expression_value_ddm1)/2
+
+ggplot(virtual_f1, aes(expression_value_ddm1,virutal_f1))+geom_point() + facet_wrap(~plate)
+                                                                                    
+                                                                                    
+virtual_f1_2 <- inner_join(virtual_f1, F1_ddm1_clean,
+                           by = c("plate", "TE"),
+                           suffix = c("", "_real_F1"))
+
+
+
+virtual_f1$is_TE <- grepl("AT[1-9]TE", virtual_f1$TE)
+
+library(ggplot2)
+# Plot with color based on TE status
+ggplot(virtual_f1, aes(expression_value_ddm1, virutal_f1, color = is_TE)) +
+    geom_point(alpha = 0.2, size=2) + 
+    facet_wrap(~plate) +
+    scale_color_manual(values = c("FALSE" = "#8DD8FF", "TRUE" = "#A62C2C"),
+                       labels = c("FALSE" = "Genes", "TRUE" = "TEs"),
+                       name = "Element Type") +
+    labs(x = "Expression Value DDM1", 
+         y = "Virtual F1",
+         title = "Expression Values Colored by TE Status") +
+    theme_minimal(base_size = 15)
+
+```
+## Add read F1 
+```{r}
+virtual_f1$plate <- as.numeric(virtual_f1$plate)
+F1_ddm1_clean$plate <- as.numeric(F1_ddm1_clean$plate)
+
+virtual_f1_with_real_ddm1 <- inner_join(virtual_f1,F1_ddm1_clean,by=c('plate','TE'))
+```
+
+##Scatterplot virtual VS real F1 
+```{r}
+library(dplyr)
+library(ggplot2)
+
+virtual_f1_with_real_ddm1 <- virtual_f1_with_real_ddm1[virtual_f1_with_real_ddm1$is_TE=="TRUE",]
+ggplot(virtual_f1_with_real_ddm1, aes(x =  virutal_f1, y = expression_value)) +
+  geom_point(size = 1, color = "black", alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red")+
+  facet_wrap(~ plate, scales = "free") +
+  labs(
+    title = "Scatterplot of F1_ddm1 vs Virtual_F1 per Plate",
+    x = "Virtual F1",
+    y = "F1_ddm1"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+library(dplyr)
+# assuming F1_ddm1 and virtual_F1 are log values already
+
+
+tes <- grepl("AT[1-9]TE", virtual_f1_2$TE)
+expression_df_tes <-virtual_f1_2[tes,]
+
+threshold <- 1
+merged_plot <- expression_df_tes %>%
+  dplyr::mutate(low_ratio = (virutal_f1 - expression_value) > threshold)
+
+ggplot(merged_plot, aes(x = virutal_f1, y =  expression_value, color = low_ratio)) +
+  geom_point(size = 1.4, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c(`TRUE` = "purple", `FALSE` = "black")) +
+  facet_wrap(~ plate, scales = "free") +
+  theme_minimal(base_size = 15) 
+```
+
+## Get all TEs showing this ratio 
+```{r}
+hypomethylated_tes <- merged_plot[merged_plot$low_ratio=="TRUE",]
+write.csv2(hypomethylated_tes, "/groups/nordborg/projects/ddm1_resilencing/04_output/expression_matrix_output/hypomethylated_tes_morethan1.csv", quote = F, row.names = F)
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# low_ratio already computed in merged_plot
+
+# Count unique TEs per plate among highlighted points
+n_annot <- merged_plot |>
+  filter(low_ratio) |>
+  distinct(plate, TE) |>
+  count(plate, name = "n_TE_highlighted")
+
+ggplot(merged_plot, aes(x = F1_ddm1, y = virtual_F1, color = low_ratio)) +
+  geom_point(size = 1.4, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c(`TRUE` = "black", `FALSE` = "#9B4DCA")) +
+  facet_wrap(~ plate, scales = "free") +
+  geom_text(
+    data = n_annot,
+    aes(x = -Inf, y = Inf, label = paste0("n TEs = ", n_TE_highlighted)),
+    inherit.aes = FALSE,
+    hjust = -0.1, vjust = 1.1, size = 4.5, color = "black"
+  ) +
+  theme_minimal(base_size = 15)
+```
+## Compare virtual F1 to the Pierre 
+```{r}
+library(dplyr)
+library(tidyr)
+
+library(dplyr)
+
+# Unique highlighted (plate, TE)
+te_highlighted <- merged_plot |>
+  filter(low_ratio) |>
+  distinct(plate, TE)
+
+# Total number of plates
+n_plates <- merged_plot |>
+  distinct(plate) |>
+  nrow()
+
+# TE IDs highlighted in ALL plates
+tes_common_all_plates <- te_highlighted |>
+  count(TE, name = "n_plates_highlighted") |>
+  filter(n_plates_highlighted == n_plates) |>
+  pull(TE)
+
+tes_common_all_plates
+```
+## Compare to pierre's tes 
+```{r}
+pierrestes<- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/data_from_pierre/pilot_experiment_upregulated/ddm1xCol_14_vs_virtual_F1_14_downTEs_mean_padj_01.tsv", header=T)
+pierrestes <- pierrestes$Geneid
+
+library(VennDiagram)
+set_A <-pierrestes
+set_B <-tes_common_all_plates
+
+#KANNO_LIMMA=set_C
+# Generate the Venn diagram
+venn.plot <- venn.diagram(
+  x = list(pierre_set=set_A,all_plates = set_B),
+  filename = NULL, # Set to NULL to plot directly in R
+  fill = c( "green","purple"),
+  alpha = 0.5,
+  cex = 2,
+  cat.cex = 1,
+  main = ""
+)
+
+# Plot the diagram
+grid::grid.draw(venn.plot)
+
+
+pierrestes_in_intersection <- intersect(pierrestes, tes_common_all_plates)
+pierrestes_in_intersection
+```
+
+
+
+
+
+
+

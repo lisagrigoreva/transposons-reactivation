@@ -1,0 +1,51 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+## Match longread assemblies with paper2
+```{r}
+library(data.table)
+```
+
+```{r}
+tm3_samples <- fread("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_metadata_with_ibdpainting_all_samples.txt")
+assemblies <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pacbio_longread_genomes/Athaliana_assemblies_paper2.txt")
+## Keep only 1 TAIR10
+assemblies <-assemblies[assemblies$Assembly_ID!="100002",]
+```
+## Get accessions which intersetc
+```{r}
+library(data.table)
+# Make sure both join columns have the same data type
+tm3_samples[, Accession := as.character(Accession)]
+assemblies[, Accession_ID := as.character(Accession_ID)]
+
+# Keep only rows where Accession overlaps with Accession_ID
+result <- merge(
+  tm3_samples,
+  assemblies[, .(Accession_ID, Assembly_ID)],
+  by.x = "Accession",
+  by.y = "Accession_ID"
+)
+
+str(unique(result$Accession))
+##Number of assemblies
+str(unique(result$Assembly_ID))
+```
+## Are they any accessions with >=1 accession ID? 
+```{r}
+result[, .(n_assembly_ids = uniqueN(Assembly_ID)), by = Accession][n_assembly_ids > 1]
+```
+## Write the output
+```{r}
+write.table(result,"/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pacbio_longread_genomes/intersection_with_tm3_data.csv", quote = F, row.names = F, sep="\t")
+assembly_ids <- unique(result$Assembly_ID)
+write.table(assembly_ids,"/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/pacbio_longread_genomes/unique_longread_assemblies.csv", quote = F, row.names = F, sep="\t")
+```
+
+
+
+
+
+
+
