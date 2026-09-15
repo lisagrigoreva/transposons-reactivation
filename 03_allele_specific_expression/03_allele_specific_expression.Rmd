@@ -12,7 +12,7 @@ library(data.table)
 # Make counts by rsem 
 library(tximport)
 # Base directory for RSEM outputs
-rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/nonase_quantification"
+rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/nonase_quantification/"
 sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_metadata_with_ibdpainting_all_samples.txt", header=T, sep="\t")
 # Construct sample paths 
 sample_paths <- file.path(rsem_base_dir)
@@ -64,7 +64,7 @@ genotype <- factor(filteredSampleData$Genotype)
 d0 <- DGEList(counts = counts)
 d0 <- d0[rowSums(d0$counts) > 0, ]
 # Keep genes/TEs with >= 10 counts total across all samples (not restricted to ddm1_ct)
-keep <- rowSums(d0$counts) >= 10
+keep <- rowSums(d0$counts) >= 5
 d0_filtered <- d0[keep, , keep.lib.sizes = FALSE]
 # Normalize
 d0_filtered <- calcNormFactors(d0_filtered)
@@ -77,7 +77,7 @@ cat("Percentage retained:", round(nrow(d0_filtered)/nrow(d0)*100, 1), "%\n")
 # Before filtering
 log_cpm_before <- cpm(d0, log=TRUE)
 # After filtering
-log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=TRUE)
+log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=FALSE)
 log_cpm_after_manual <- log2(log_cpm_after_manual+1)
 log_cpm_after <- log_cpm_after_manual
 # Plot density distributions
@@ -85,7 +85,7 @@ par(mfrow=c(1,2))
 plot(density(log_cpm_before), main="Before filtering", xlab="log2 counts")
 plot(density((log_cpm_after)), main="After filtering", xlab="log2 counts")
 ```
-## PCA
+## PCA of genes and TEs colored based on the allele
 ```{r}
 library(ggplot2)
 
@@ -108,9 +108,7 @@ meta_ase <- data.frame(
 )
 
 run_pca <- function(ids, tair, acc, meta_ase, title) {
-
     x <- t(cbind(tair[ids, ], acc[ids, ]))
-
     pca_info <- data.frame(
         Allele   = rep(c("TAIR10", "100752"), each = ncol(tair)),
         Genotype = rep(meta_ase$Genotype, times = 2)
@@ -138,6 +136,344 @@ p_tes   <- run_pca(te_ids,   tair, acc, meta_ase, title = "PCA - TEs")
 p_genes
 p_tes
 ```
+## Upload probabilities defined by RSEM and attach them to the analysis
+```{r}
+library(data.table)
+aln <- fread(
+  "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/all_alignments_combined.tsv",
+  header = FALSE, sep = "\t",
+  col.names = c("sample_id", "read_id", "transcript_id", "STAR_NH", "RSEM_ZW"),
+  na.strings = "NA"
+)[!is.na(RSEM_ZW)]
+
+## Add STAR multimapping/ and probability 
+aln[, `:=`(
+  sample_id = as.character(sample_id),
+  STAR_NH = as.integer(STAR_NH),
+  RSEM_ZW = as.numeric(RSEM_ZW)
+)]
+
+genes <- aln[grepl("^AT[1-5]G[0-9]{5}\\.[0-9]+_[A-Za-z0-9]+$", transcript_id)] # Select only genes
+# Select genome id 
+genes[, `:=`(
+  gene_id = sub("^(AT[1-5]G[0-9]{5}).*$", "\\1", transcript_id),
+  genome  = sub("^.*_([A-Za-z0-9]+)$", "\\1", transcript_id)
+)]
+```
+
+```{r}
+## ---------------------------------------------------------
+## GOAL: Build a read-level table with:
+##   - RSEM weight assigned to tair10
+##   - RSEM weight assigned to 100752
+##   - STAR NH value for that read
+## ---------------------------------------------------------
+
+## Step 1: For each read + gene + genome, add up the RSEM weight
+## (this collapses isoforms, since multiple transcripts of the
+## same gene/genome are summed together)
+weights_by_read_gene_genome <- genes[
+  , .(weight = sum(RSEM_ZW)),
+  by = .(sample_id, read_id, gene_id, genome)
+]
+
+## Step 2: Turn the "genome" column into two separate columns
+## (one per genome), so each read+gene has its weights side by side
+weights_wide <- dcast(
+  weights_by_read_gene_genome,
+  sample_id + read_id + gene_id ~ genome,
+  value.var = "weight",
+  fill = 0
+)
+## Step 3: Get the STAR NH value for each read
+## (take the max in case a read has multiple NH entries recorded)
+nh_per_read <- genes[
+  , .(NH = max(STAR_NH)),
+  by = .(sample_id, read_id)
+]
+## Check for malformed records
+nh_per_read <- unique(
+  genes[, .(sample_id, read_id, NH = STAR_NH)]
+)
+anyDuplicated(nh_per_read, by = c("sample_id", "read_id")) # If 0 -each read has its unique value 
+## Step 4: Attach the NH value onto our weights table
+## This matches rows by sample_id + read_id, and copies NH over
+weights_wide[
+  nh_per_read,
+  NH := i.NH,
+  on = c("sample_id", "read_id")
+]
+
+
+read_gene <- weights_wide
+
+gene_table <- read_gene[
+  tair10 + `100752` > 0,
+  .(
+    supporting_reads = .N,
+    NH_median = as.numeric(median(NH, na.rm = TRUE)),
+    multimapped_frac = mean(NH > 1, na.rm = TRUE),
+    prob_tair10 = sum(tair10) / (sum(tair10) + sum(`100752`))
+  ),
+  by = .(sample_id, gene_id)
+]
+
+gene_table[, prob_100752 := 1 - prob_tair10]
+
+head(gene_table)
+```
+## Attach to RSEM and Greg's counts 
+```{r}
+## Check genes that have certain determination to one of the genomes. Attach RSEM counts and Greg's counts 
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+pattern <- "^(F1_(?:Col|ddm1))_([^_]+)_([^_]+)_([^_]+)_([^_]+)$"
+
+tair_long <- tair %>%
+  as.data.frame(check.names = FALSE) %>%
+  rownames_to_column("ID") %>%
+  pivot_longer(
+    cols = -ID,
+    names_to = c(
+      "genotype",
+      "accession_id",
+      "replicate",
+      "plate",
+      "run_id"
+    ),
+    names_pattern = pattern,
+    values_to = "expression_tair10_nonase"
+  ) %>%
+  mutate(
+    accession_id = as.integer(accession_id),
+    replicate     = as.integer(replicate),
+    plate = as.integer(plate),
+    run_id        = as.integer(run_id)
+  )
+
+
+
+acc_long <- acc %>%
+  as.data.frame(check.names = FALSE) %>%
+  rownames_to_column("ID") %>%
+  pivot_longer(
+    cols = -ID,
+    names_to = c(
+      "genotype",
+      "accession_id",
+      "replicate",
+      "plate",
+      "run_id"
+    ),
+    names_pattern = pattern,
+    values_to = "expression_acc"
+  ) %>%
+  mutate(
+    accession_id = as.integer(accession_id),
+    replicate     = as.integer(replicate),
+    plate = as.integer(plate),
+    run_id        = as.integer(run_id)
+  )
+
+expression_ase <- inner_join(acc_long,tair_long)
+
+```
+
+```{r}
+## Read Greg's data 
+genes_ase <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/ASE_diploid_counts_filtered.csv.gz", sep=",", header=T)
+expression_ase_genes_validated <- inner_join(expression_ase,genes_ase, by=c("ID", "genotype", "accession_id", "run_id"))
+expression_ase_genes_validated$e.col.norm = expression_ase_genes_validated$e.col / expression_ase_genes_validated$expected_e.col
+expression_ase_genes_validated$e.col.norm<- log2(expression_ase_genes_validated$e.col.norm+1)
+expression_ase_genes_validated$e.acc.norm = expression_ase_genes_validated$e.acc / expression_ase_genes_validated$expected_e.acc
+expression_ase_genes_validated$e.acc.norm<- log2(expression_ase_genes_validated$e.acc.norm+1)
+## Select necessary columns 
+ase_rsem_gregs  <- expression_ase_genes_validated %>% dplyr::select(ID,run_id,genotype,expression_tair10,expression_acc,e.col.norm,e.acc.norm,n_variants_retained)
+## Attach to the probabilities
+gene_table$sample_id <- as.numeric(gene_table$sample_id)
+ase_rsem_gregs_with_probabilities <- inner_join(gene_table,ase_rsem_gregs, by=c("gene_id"="ID", "sample_id"="run_id"))
+```
+## Visualize reads clearly mapped to the accession/TAIR10
+```{r}
+setDT(ase_rsem_gregs_with_probabilities)
+ase_rsem_gregs_with_probabilities[, confidence_group := fcase(
+  prob_tair10 >= 0.99, "confident_tair10",
+  prob_100752 >= 0.99, "confident_acc",
+  prob_tair10 == 0.50 & prob_100752 == 0.50, "ambiguous_50_50",
+  default = "other"
+)]
+ase_rsem_gregs_with_probabilities <-ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$supporting_reads>10,]
+
+tair10_genes <-ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_tair10>0.99 & ase_rsem_gregs_with_probabilities$genotype=="F1_ddm1",]
+acc_genes <-ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_100752>0.99 &ase_rsem_gregs_with_probabilities$genotype=="F1_ddm1",]
+
+tair10_genes <- ase_rsem_gregs_with_probabilities[prob_tair10 > 0.99, .(sample_id, gene_id)]
+acc_genes <- ase_rsem_gregs_with_probabilities[prob_100752 > 0.99, .(sample_id, gene_id)]
+
+common_within_sample <- merge(
+  tair10_genes,
+  acc_genes,
+  by = c("sample_id", "gene_id")
+)
+nrow(common_within_sample)
+
+## Allelic bias 
+ase_rsem_gregs_with_probabilities[
+  gene_id %in% common_genes,
+  .(sample_id, gene_id, prob_tair10, prob_100752, genotype)
+][order(gene_id, sample_id)]
+```
+## Make a boxplot
+```{r}
+library(data.table)
+library(ggplot2)
+
+# Keep confidence groups of interest and genes with sufficient read support
+plot_data <- melt(
+  ase_rsem_gregs_with_probabilities[
+    confidence_group != "other"
+  ],
+  id.vars = c("sample_id", "gene_id", "confidence_group", "genotype"),
+  measure.vars = c(
+    "expression_tair10",
+    "expression_acc"
+  ),
+  variable.name = "expression_measure",
+  value.name = "expression"
+)
+
+
+# Remove missing and non-finite expression values
+plot_data <- plot_data[
+  !is.na(expression) & is.finite(expression)
+]
+```
+
+```{r}
+ggplot(
+  plot_data,
+  aes(
+    x = confidence_group,
+    y = expression,
+    fill = expression_measure
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    outlier.alpha = 0.2
+  ) +
+  labs(
+    x = "Assignment confidence group",
+    y = "Expression",
+    fill = "Expression measure"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )+facet_wrap(~genotype)
+```
+
+```{r}
+expression_tair10 <- ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_tair10>=0.99 ,]
+ggplot(expression_tair10,aes(e.acc.norm,e.col.norm))+geom_point()+ coord_equal()
+
+expression_accession <- ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_100752>=0.99,]
+ggplot(expression_accession,aes(e.acc.norm,e.col.norm))+geom_point()+ coord_equal()
+
+ggplot(expression_tair10, aes(expression_tair10, e.col.norm)) +
+  geom_point() +
+  coord_equal()
+ggplot(expression_accession, aes(expression_acc,e.acc.norm))+geom_point()+ coord_equal()
+```
+
+```{r}
+genes_by_group <- ase_rsem_gregs_with_probabilities[
+  confidence_group != "other",
+  .(genes = list(unique(gene_id))),
+  by = .(genotype, confidence_group)
+]
+
+# View counts per group
+ase_rsem_gregs_with_probabilities[
+  confidence_group != "other",
+  .(n_genes = uniqueN(gene_id)),
+  by = .(genotype, confidence_group)
+]
+
+gene_id_table <- unique(
+  ase_rsem_gregs_with_probabilities[
+    confidence_group != "other",
+    .(genotype, confidence_group, gene_id)
+  ]
+)[order(genotype, confidence_group, gene_id)]
+
+gene_id_table_filtered<-gene_id_table[gene_id_table$confidence_group=="confident_accession" & gene_id_table$genotype=="F1_ddm1",]
+write.table(gene_id_table_filtered,"/groups/nordborg/projects/ddm1_resilencing/04_output/ase/f1acc_ddm1_expressed.csv", quote = F, row.names = F)
+```
+
+## Compare ASE proportion to greg's data
+```{r}
+ase_rsem_gregs_with_probabilities$ase_greg <- ase_rsem_gregs_with_probabilities$e.col.norm   / (ase_rsem_gregs_with_probabilities$e.col.norm + ase_rsem_gregs_with_probabilities$e.acc.norm)
+
+ase_rsem_gregs_with_probabilities$ase_lisa <- ase_rsem_gregs_with_probabilities$expression_tair10   / (ase_rsem_gregs_with_probabilities$expression_tair10 + ase_rsem_gregs_with_probabilities$expression_acc)
+```
+## Compare expression without allele specificity 
+```{r}
+tair_long
+ase_rsem_gregs_with_probabilities_with_nonase <- inner_join(tair_long,ase_rsem_gregs_with_probabilities,by=c("run_id"="sample_id", "ID"="gene_id","genotype"))
+ase_rsem_gregs_with_probabilities_with_nonase[
+  , sum_of_alleles := log2(
+    (2^expression_tair10 - 1) +
+    (2^expression_acc - 1) +
+    1
+  )
+]
+ggplot(
+  ase_rsem_gregs_with_probabilities_with_nonase,
+  aes(sum_of_alleles, expression_tair10_nonase, color = confidence_group, alpha=0.2)
+) +
+  geom_point(alpha = 0.2) +
+  facet_wrap(~run_id) +
+  coord_equal() +
+  labs(
+    x = "Sum of alleles",
+    y = "Expression (TAIR10, non-ASE)",
+    color = "Confidence group"
+  ) +
+  theme_bw()+coord_equal()
+```
+```{r}
+library(data.table)
+
+setDT(ase_rsem_gregs_with_probabilities_with_nonase)
+
+outliers <- ase_rsem_gregs_with_probabilities_with_nonase[
+  confidence_group == "confident_tair10" &
+    expression_tair10_nonase > sum_of_alleles,
+  .(
+    gene_id = ID,
+    run_id,
+    expression_tair10_nonase,
+    sum_of_alleles,
+    n_variants_retained,
+    multimapped_frac
+  )
+][order(-(expression_tair10_nonase - sum_of_alleles))]
+
+outliers
+```
+
+
+
+
+
+##OLD
+
+
+
+
 
 ```{r}
 # Expression matrices for each parental allele
@@ -324,6 +660,8 @@ acc_long <- acc %>%
 
 ```{r}
 expression_ase <- inner_join(acc_long,tair_long)
+
+genes_ase <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/ASE_diploid_counts_filtered.csv.gz", sep=",", header=T)
 expression_ase_genes_validated <- inner_join(expression_ase,genes_ase, by=c("ID", "genotype", "accession_id", "run_id"))
 expression_ase_genes_validated$e.col.norm = expression_ase_genes_validated$e.col / expression_ase_genes_validated$expected_e.col
 expression_ase_genes_validated$e.acc.norm = expression_ase_genes_validated$e.acc / expression_ase_genes_validated$expected_e.acc
