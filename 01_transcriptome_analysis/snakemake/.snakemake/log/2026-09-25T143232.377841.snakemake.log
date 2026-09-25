@@ -1,0 +1,25 @@
+Assuming unrestricted shared filesystem usage.
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 14:32:32
+  Workflow ID: b575802f-e4dc-4f29-98dc-63b36acf15e3
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-login-1.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 30 samples.tsv
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 06534bf206698f4856517f73ee908fc7
+
+Building DAG of jobs...
+MissingInputException in rule extract_tarballs in file "/groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile", line 20:
+Missing input files for rule extract_tarballs:
+    output: extraction_done.flag
+    affected files:
+        tarballs_to_extract.txt

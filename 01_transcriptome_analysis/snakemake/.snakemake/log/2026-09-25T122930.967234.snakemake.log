@@ -1,0 +1,43 @@
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 12:29:30
+  Workflow ID: 9de69e14-7f68-4a0a-bf17-90ed72eb6b1e
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-c2-58.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 30 --executor slurm --jobs 100 --default-resources slurm_account=elizaveta.grigoreva slurm_partition=c --latency-wait 60 --rerun-incomplete
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 99f0258f61ebe3a564f3ad15b251c5ce
+
+Building DAG of jobs...
+You are running snakemake in a SLURM job context. This is not recommended, as it may lead to unexpected behavior. If possible, please run Snakemake directly on the login node.
+SLURM run ID: 3d23730c-1767-48e3-a906-632c5494e7b2
+MinJobAge 300s (>= 120s). 'squeue' should work reliably for status queries.
+Using shell: /usr/bin/bash
+Provided remote nodes: 100
+Job stats:
+job      count
+-----  -------
+all          1
+total        1
+
+Select jobs to execute...
+Execute 1 jobs...
+[Fri Sep 25 12:29:31 2026]
+localrule all:
+    jobid: 0
+    reason: Rules with neither input nor output files are always executed.
+    resources: tmpdir=/tmp, disk_mb=50000, disk=50 GB, disk_mib=47684, mem_mb=1000, mem=1 GB, mem_mib=954, slurm_account=elizaveta.grigoreva, slurm_partition=c
+[Fri Sep 25 12:29:31 2026]
+Finished jobid: 0 (Rule: all)
+1 of 1 steps (100%) done
+Cleaning up SLURM log files older than 10 day(s).
+Complete log(s): /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/.snakemake/log/2026-09-25T122930.967234.snakemake.log
+Elapsed time: 0:00:40.694120

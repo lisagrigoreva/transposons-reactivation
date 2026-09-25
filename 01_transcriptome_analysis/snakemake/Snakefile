@@ -1,0 +1,42 @@
+import pandas as pd
+import os
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+configfile: "config.yaml"
+
+# ============================================================================
+# Sample Loading
+# ============================================================================
+
+samples = None
+SAMPLES = []
+
+if os.path.exists(config["sample_sheet"]):
+    samples = pd.read_csv(config["sample_sheet"], sep="\t", dtype=str)
+    samples["unique_id"] = samples["unique_id"].str.strip()
+    samples = samples.set_index("unique_id", drop=False)  # enables lookups by unique_id
+    SAMPLES = samples["unique_id"].tolist()
+else:
+    raise FileNotFoundError(f"Sample sheet not found: {config['sample_sheet']}")
+
+# ============================================================================
+# Include Rule Modules
+# ============================================================================
+
+include: "rules/00_preprocessing.smk"
+include: "rules/01_trimming.smk"
+
+# ============================================================================
+# Target Rules
+# ============================================================================
+
+rule all:
+    input:
+        expand(
+            os.path.join(config["outdir"], "umi_trimmed", "{sample}.fastq.gz"),
+            sample=SAMPLES
+        )
+    default_target: True

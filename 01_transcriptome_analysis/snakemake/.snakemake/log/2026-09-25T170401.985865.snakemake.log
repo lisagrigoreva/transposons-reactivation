@@ -1,0 +1,29 @@
+Assuming unrestricted shared filesystem usage.
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 17:04:01
+  Workflow ID: 1d5ca773-d712-4d30-b95a-003db314c8af
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-login-1.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 10
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 63c7be2037273491db8b20540a4fd63d
+
+Building DAG of jobs...
+IncompleteFilesException:
+The files below seem to be incomplete. If you are sure that certain files are not incomplete, mark them as complete with
+
+    snakemake --cleanup-metadata <filenames>
+
+To re-generate the files rerun your command with the --rerun-incomplete flag.
+Incomplete files:
+/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz
+/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz

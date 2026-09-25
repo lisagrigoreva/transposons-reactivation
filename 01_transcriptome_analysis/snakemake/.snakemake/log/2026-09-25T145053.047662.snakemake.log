@@ -1,0 +1,57 @@
+Assuming unrestricted shared filesystem usage.
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 14:50:53
+  Workflow ID: f4b4f1fa-c209-4382-ba12-b958a1d1c265
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-login-1.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 30 samples.tsv
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 06534bf206698f4856517f73ee908fc7
+
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 30
+Rules claiming more threads will be scaled down.
+Job stats:
+job                   count
+------------------  -------
+extract_tarballs          1
+build_sample_sheet        1
+total                     2
+
+Select jobs to execute...
+Execute 1 jobs...
+[Fri Sep 25 14:50:53 2026]
+localrule extract_tarballs:
+    input: scripts/tarballs_to_extract.txt
+    output: extraction_done.flag
+    jobid: 1
+    reason: Missing output files: extraction_done.flag
+    threads: 30
+    resources: tmpdir=/tmp
+[Fri Sep 25 15:41:26 2026]
+Finished jobid: 1 (Rule: extract_tarballs)
+1 of 2 steps (50%) done
+Select jobs to execute...
+Execute 1 jobs...
+[Fri Sep 25 15:41:27 2026]
+localrule build_sample_sheet:
+    input: extraction_done.flag
+    output: samples.tsv
+    jobid: 0
+    reason: Missing output files: samples.tsv; Input files updated by another job: extraction_done.flag
+    resources: tmpdir=/tmp
+[Fri Sep 25 15:41:40 2026]
+Finished jobid: 0 (Rule: build_sample_sheet)
+2 of 2 steps (100%) done
+Complete log(s): /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/.snakemake/log/2026-09-25T145053.047662.snakemake.log
+Elapsed time: 0:50:47.763211

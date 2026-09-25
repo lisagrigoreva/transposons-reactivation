@@ -1,0 +1,49 @@
+Lints for rule extract_tarballs (line 20, /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile):
+    * No log directive defined:
+      Without a log directive, all output will be printed to the terminal. In distributed environments, this means that
+      errors are harder to discover. In local environments, output of concurrent jobs will be mixed and become unreadable.
+      Also see:
+      https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#log-files
+    * Specify a conda environment or container for each rule.:
+      This way, the used software for each specific step is documented, and the workflow can be executed on any machine
+      without prerequisites.
+      Also see:
+      https://snakemake.readthedocs.io/en/latest/snakefiles/deployment.html#integrated-package-management
+      https://snakemake.readthedocs.io/en/latest/snakefiles/deployment.html#running-jobs-in-containers
+
+Lints for rule build_sample_sheet (line 56, /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile):
+    * No log directive defined:
+      Without a log directive, all output will be printed to the terminal. In distributed environments, this means that
+      errors are harder to discover. In local environments, output of concurrent jobs will be mixed and become unreadable.
+      Also see:
+      https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#log-files
+    * Specify a conda environment or container for each rule.:
+      This way, the used software for each specific step is documented, and the workflow can be executed on any machine
+      without prerequisites.
+      Also see:
+      https://snakemake.readthedocs.io/en/latest/snakefiles/deployment.html#integrated-package-management
+      https://snakemake.readthedocs.io/en/latest/snakefiles/deployment.html#running-jobs-in-containers
+
+Lints for rule umi_trim (line 68, /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile):
+    * Specify a conda environment or container for each rule.:
+      This way, the used software for each specific step is documented, and the workflow can be executed on any machine
+      without prerequisites.
+      Also see:
+      https://snakemake.readthedocs.io/en/latest/snakefiles/deployment.html#integrated-package-management
+      https://snakemake.readthedocs.io/en/latest/snakefiles/deployment.html#running-jobs-in-containers
+    * Shell command directly uses variable config from outside of the rule:
+      It is recommended to pass all files as input and output, and non-file parameters via the params directive. Otherwise,
+      provenance tracking is less accurate.
+      Also see:
+      https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#non-file-parameters-for-rules
+    * Shell command directly uses variable config from outside of the rule:
+      It is recommended to pass all files as input and output, and non-file parameters via the params directive. Otherwise,
+      provenance tracking is less accurate.
+      Also see:
+      https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#non-file-parameters-for-rules
+    * Shell command directly uses variable config from outside of the rule:
+      It is recommended to pass all files as input and output, and non-file parameters via the params directive. Otherwise,
+      provenance tracking is less accurate.
+      Also see:
+      https://snakemake.readthedocs.io/en/stable/snakefiles/rules.html#non-file-parameters-for-rules
+

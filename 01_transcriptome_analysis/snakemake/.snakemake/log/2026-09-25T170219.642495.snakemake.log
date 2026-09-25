@@ -1,0 +1,102 @@
+Assuming unrestricted shared filesystem usage.
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 17:02:19
+  Workflow ID: 0b1b8e7a-866a-42b3-b7a3-e344388d7e43
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-login-1.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 10
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 63c7be2037273491db8b20540a4fd63d
+
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 10
+Rules claiming more threads will be scaled down.
+Job stats:
+job         count
+--------  -------
+umi_trim     2119
+all             1
+total        2120
+
+Select jobs to execute...
+Execute 2 jobs...
+[Fri Sep 25 17:02:29 2026]
+localrule umi_trim:
+    input: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R1_001.fastq.gz, /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R2_001.fastq.gz
+    output: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz
+    log: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/300424_S58_1.log
+    jobid: 347
+    reason: Missing output files: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz
+    wildcards: sample=300424_S58_1
+    threads: 4
+    resources: tmpdir=/tmp, time=8:00:00, mem_mb=10000, mem=10 GB, mem_mib=9537
+[Fri Sep 25 17:02:29 2026]
+localrule umi_trim:
+    input: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R1_001.fastq.gz, /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R2_001.fastq.gz
+    output: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz
+    log: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/312186_S68_1.log
+    jobid: 1123
+    reason: Missing output files: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz
+    wildcards: sample=312186_S68_1
+    threads: 4
+    resources: tmpdir=/tmp, time=8:00:00, mem_mb=10000, mem=10 GB, mem_mib=9537
+Select jobs to execute...
+Terminating processes on user request, this might take some time.
+RuleException:
+CalledProcessError in file "/groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/rules/01_trimming.smk", line 21:
+Command 'set -euo pipefail;  
+        # Load required modules
+        ml build-env/f2022
+        ml fastp/0.23.4-gcc-12.2.0
+        mkdir -p $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz) $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/300424_S58_1.log)
+        fastp             -i /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R1_001.fastq.gz -o /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz             -I /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R2_001.fastq.gz -O /dev/null             --umi --umi_loc=read2 --umi_len=12 --umi_prefix=UMI             --trim_poly_x --length_required 60             --adapter_fasta /groups/nordborg/projects/ddm1_resilencing/11_resources/BBMap/resources/adapters.fa 	    --qualified_quality_phred 20             --unqualified_percent_limit 20             --cut_right_mean_quality 20             --thread 4             2> /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/300424_S58_1.log' died with <Signals.SIGINT: 2>.
+[Fri Sep 25 17:03:09 2026]
+Error in rule umi_trim:
+    message: None
+    jobid: 347
+    input: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R1_001.fastq.gz, /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R2_001.fastq.gz
+    output: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz
+    log: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/300424_S58_1.log (check log file(s) for error details)
+    shell:
+        
+        # Load required modules
+        ml build-env/f2022
+        ml fastp/0.23.4-gcc-12.2.0
+        mkdir -p $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz) $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/300424_S58_1.log)
+        fastp             -i /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R1_001.fastq.gz -o /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/300424_S58_1.fastq.gz             -I /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17623/22T3LYLT3_8_R17623_20241017/demultiplexed/300424/300424_S58_R2_001.fastq.gz -O /dev/null             --umi --umi_loc=read2 --umi_len=12 --umi_prefix=UMI             --trim_poly_x --length_required 60             --adapter_fasta /groups/nordborg/projects/ddm1_resilencing/11_resources/BBMap/resources/adapters.fa 	    --qualified_quality_phred 20             --unqualified_percent_limit 20             --cut_right_mean_quality 20             --thread 4             2> /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/300424_S58_1.log
+        
+        (command exited with non-zero exit code)
+RuleException:
+CalledProcessError in file "/groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/rules/01_trimming.smk", line 21:
+Command 'set -euo pipefail;  
+        # Load required modules
+        ml build-env/f2022
+        ml fastp/0.23.4-gcc-12.2.0
+        mkdir -p $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz) $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/312186_S68_1.log)
+        fastp             -i /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R1_001.fastq.gz -o /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz             -I /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R2_001.fastq.gz -O /dev/null             --umi --umi_loc=read2 --umi_len=12 --umi_prefix=UMI             --trim_poly_x --length_required 60             --adapter_fasta /groups/nordborg/projects/ddm1_resilencing/11_resources/BBMap/resources/adapters.fa 	    --qualified_quality_phred 20             --unqualified_percent_limit 20             --cut_right_mean_quality 20             --thread 4             2> /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/312186_S68_1.log' died with <Signals.SIGINT: 2>.
+[Fri Sep 25 17:03:09 2026]
+Error in rule umi_trim:
+    message: None
+    jobid: 1123
+    input: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R1_001.fastq.gz, /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R2_001.fastq.gz
+    output: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz
+    log: /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/312186_S68_1.log (check log file(s) for error details)
+    shell:
+        
+        # Load required modules
+        ml build-env/f2022
+        ml fastp/0.23.4-gcc-12.2.0
+        mkdir -p $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz) $(dirname /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/312186_S68_1.log)
+        fastp             -i /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R1_001.fastq.gz -o /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/umi_trimmed/312186_S68_1.fastq.gz             -I /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/17608/22NV3CLT3_8_R17608_20240919/demultiplexed/312186/312186_S68_R2_001.fastq.gz -O /dev/null             --umi --umi_loc=read2 --umi_len=12 --umi_prefix=UMI             --trim_poly_x --length_required 60             --adapter_fasta /groups/nordborg/projects/ddm1_resilencing/11_resources/BBMap/resources/adapters.fa 	    --qualified_quality_phred 20             --unqualified_percent_limit 20             --cut_right_mean_quality 20             --thread 4             2> /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/logs/fastp/312186_S68_1.log
+        
+        (command exited with non-zero exit code)

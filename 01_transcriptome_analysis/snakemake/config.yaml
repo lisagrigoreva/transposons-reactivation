@@ -1,0 +1,20 @@
+# Base directories
+workdir: "/groups/nordborg/projects/ddm1_resilencing"
+datadir: "/groups/nordborg/projects/ddm1_resilencing/01_data/96_plates_tm3_rnaseq"
+
+# Processing on scratch
+outdir: "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run"
+extraction_dir: "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data"
+
+# Sample sheet (in project dir)
+sample_sheet: "samples_uniq.tsv"
+
+# Adapter file
+adapter_fasta: "/groups/nordborg/projects/ddm1_resilencing/11_resources/BBMap/resources/adapters.fa"
+
+# UMI parameters
+umi_len: 12
+length_required: 60
+cut_quality: 20
+qualified_quality_phred: 20
+unqualified_percent_limit: 20

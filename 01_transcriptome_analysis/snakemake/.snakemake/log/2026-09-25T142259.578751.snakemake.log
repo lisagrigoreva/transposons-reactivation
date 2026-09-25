@@ -1,0 +1,104 @@
+Assuming unrestricted shared filesystem usage.
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 14:22:59
+  Workflow ID: 394f9f13-7e66-4f35-a8ef-5c3a097c99bd
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-login-1.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 30 samples.tsv
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 99f0258f61ebe3a564f3ad15b251c5ce
+
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 30
+Rules claiming more threads will be scaled down.
+Job stats:
+job                   count
+------------------  -------
+extract_tarballs          1
+build_sample_sheet        1
+total                     2
+
+Select jobs to execute...
+Execute 1 jobs...
+[Fri Sep 25 14:23:00 2026]
+localrule extract_tarballs:
+    input: tarballs_to_extract.txt
+    output: extraction_done.flag
+    jobid: 1
+    reason: Missing output files: extraction_done.flag
+    threads: 30
+    resources: tmpdir=/tmp
+Terminating processes on user request, this might take some time.
+RuleException:
+CalledProcessError in file "/groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile", line 29:
+Command 'set -euo pipefail;  
+        mkdir -p /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data
+        
+        # Function to extract one tarball
+        extract_one() {
+            tarball=$1
+            if [ -f "$tarball" ]; then
+                run=$(basename $(dirname "$tarball"))
+                dest="/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/$run"
+                echo "Extracting $tarball to $dest"
+                mkdir -p "$dest"
+                tar -xzf "$tarball" -C "$dest"
+            fi
+        }
+        export -f extract_one
+        
+        # Extract in parallel (use GNU parallel if available, otherwise xargs)
+        if command -v parallel &> /dev/null; then
+            cat tarballs_to_extract.txt | parallel -j 30 extract_one
+        else
+            cat tarballs_to_extract.txt | xargs -P 30 -I {} bash -c 'extract_one "{}"'
+        fi
+        
+        touch extraction_done.flag' returned non-zero exit status 130.
+[Fri Sep 25 14:30:11 2026]
+Error in rule extract_tarballs:
+    message: None
+    jobid: 1
+    input: tarballs_to_extract.txt
+    output: extraction_done.flag
+    shell:
+        
+        mkdir -p /scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data
+        
+        # Function to extract one tarball
+        extract_one() {
+            tarball=$1
+            if [ -f "$tarball" ]; then
+                run=$(basename $(dirname "$tarball"))
+                dest="/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data/$run"
+                echo "Extracting $tarball to $dest"
+                mkdir -p "$dest"
+                tar -xzf "$tarball" -C "$dest"
+            fi
+        }
+        export -f extract_one
+        
+        # Extract in parallel (use GNU parallel if available, otherwise xargs)
+        if command -v parallel &> /dev/null; then
+            cat tarballs_to_extract.txt | parallel -j 30 extract_one
+        else
+            cat tarballs_to_extract.txt | xargs -P 30 -I {} bash -c 'extract_one "{}"'
+        fi
+        
+        touch extraction_done.flag
+        
+        (command exited with non-zero exit code)
+Complete log(s): /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/.snakemake/log/2026-09-25T142259.578751.snakemake.log
+Elapsed time: 0:07:11.572899
+WorkflowError:
+At least one job did not complete successfully.

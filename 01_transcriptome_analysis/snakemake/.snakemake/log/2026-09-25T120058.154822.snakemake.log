@@ -1,0 +1,42 @@
+
+SNAKEMAKE
+=========
+  Date: 2026-09-25 12:00:58
+  Workflow ID: 65514fc6-ceba-48ee-8126-a1f2d5475221
+  Platform: Linux-3.10.0-1160.108.1.el7.x86_64-x86_64-with-glibc2.17
+  Host: clip-login-0.cbe.vbc.ac.at
+  User: elizaveta.grigoreva
+  Snakemake version: 9.27.0
+  Python version: 3.14.7 | packaged by conda-forge | (main, Sep  2 2026, 21:08:32) [GCC 15.3.0]
+  Command: /users/elizaveta.grigoreva/.conda/envs/expression/bin/snakemake --cores 100 --executor slurm --default-resources slurm_account=elizaveta.grigoreva slurm_partition=c mem_mb=10000 runtime=480 --jobs 100
+  Snakefile: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile
+  Base directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Run directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Working directory: /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+  Config file(s): ['config.yaml']
+  Config MD5: 99f0258f61ebe3a564f3ad15b251c5ce
+
+Building DAG of jobs...
+SLURM run ID: 67a03411-2cda-45af-b6e5-7a0928b8c07e
+MinJobAge 300s (>= 120s). 'squeue' should work reliably for status queries.
+Using shell: /usr/bin/bash
+Provided remote nodes: 100
+Job stats:
+job      count
+-----  -------
+all          1
+total        1
+
+Select jobs to execute...
+Execute 1 jobs...
+[Fri Sep 25 12:00:58 2026]
+localrule all:
+    jobid: 0
+    reason: Rules with neither input nor output files are always executed.
+    resources: tmpdir=/tmp, disk_mb=50000, disk=50 GB, disk_mib=47684, mem_mb=10000, mem=10 GB, mem_mib=9537, slurm_account=elizaveta.grigoreva, slurm_partition=c, runtime=480
+[Fri Sep 25 12:00:58 2026]
+Finished jobid: 0 (Rule: all)
+1 of 1 steps (100%) done
+Cleaning up SLURM log files older than 10 day(s).
+Complete log(s): /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/.snakemake/log/2026-09-25T120058.154822.snakemake.log
+Elapsed time: 0:00:40.424889

@@ -1,0 +1,3 @@
+SyntaxError in file "/groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/Snakefile", line 19:
+Unexpected keyword param in rule definition:
+None

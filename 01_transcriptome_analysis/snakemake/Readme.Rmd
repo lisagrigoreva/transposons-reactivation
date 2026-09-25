@@ -1,0 +1,64 @@
+---
+title: "3' QuantSeq UMI Pipeline"
+author: "Modular Snakemake Workflow"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Overview
+
+Automated pipeline for processing 3' QuantSeq RNA-seq data with UMI extraction and trimming.
+
+---
+
+## Directory Structure
+
+```
+.
+├── Snakefile                        # Main workflow orchestrator
+├── config.yaml                      # Configuration file
+├── rules/
+│   ├── 00_preprocessing.smk         # Extract archives, build sample sheet
+│   └── 01_trimming.smk              # fastp UMI extraction and trimming
+├── scripts/
+│   ├── build_sample_sheet.py       # Generate unique_id from filenames
+│   ├── find_missing_samples.sh     # Quality control helper
+│   └── check_trimming_qc.sh        # Trimming QC validation
+└── /scratch-cbe/.../snakemake_run/
+    ├── extracted/                   # Raw extracted FASTQs
+    ├── sample_sheet.csv             # Generated sample metadata
+    └── umi_trimmed/                 # Final UMI-processed FASTQs
+```
+
+---
+
+## Quick Start
+
+```bash
+# 1. Dry run to validate workflow
+snakemake -n
+
+# 2. Execute on SLURM cluster
+snakemake --profile slurm --jobs 50
+
+# 3. Check trimming results
+bash scripts/check_trimming_qc.sh
+```
+
+---
+
+## Workflow Stages
+
+1. **Preprocessing** - Extract 30 tar.gz archives to scratch; generate sample sheet with unique_id (format: `294339_S26`)
+2. **UMI Extraction** - Extract 12bp UMI from R2, embed in R1 header as `@...:UMI_TTTGTGTGAAAG`
+3. **3' Trimming** - fastp with `--trim_poly_x --cut_right` for polyA/polyX removal specific to 3' sequencing
+
+---
+
+## Key Outputs
+
+| Output | Location | Description |
+|--------|----------|-------------|
+| Sample metadata | `sample_sheet.csv` | unique_id, sample_name, file paths |
+| UMI-trimmed FASTQs | `/scratch-cbe/.../umi_trimmed/{unique_id}.fastq.gz` | ~2086 samples with UMI in header |
+| QC reports | `fastp_reports/` | Per-sample trimming statistics |
