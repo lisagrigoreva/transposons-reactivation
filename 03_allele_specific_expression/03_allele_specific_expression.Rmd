@@ -12,7 +12,7 @@ library(data.table)
 # Make counts by rsem 
 library(tximport)
 # Base directory for RSEM outputs
-rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/nonase_quantification/"
+rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification"
 sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_metadata_with_ibdpainting_all_samples.txt", header=T, sep="\t")
 # Construct sample paths 
 sample_paths <- file.path(rsem_base_dir)
@@ -64,7 +64,7 @@ genotype <- factor(filteredSampleData$Genotype)
 d0 <- DGEList(counts = counts)
 d0 <- d0[rowSums(d0$counts) > 0, ]
 # Keep genes/TEs with >= 10 counts total across all samples (not restricted to ddm1_ct)
-keep <- rowSums(d0$counts) >= 5
+keep <- rowSums(d0$counts) >= -1
 d0_filtered <- d0[keep, , keep.lib.sizes = FALSE]
 # Normalize
 d0_filtered <- calcNormFactors(d0_filtered)
@@ -78,28 +78,35 @@ cat("Percentage retained:", round(nrow(d0_filtered)/nrow(d0)*100, 1), "%\n")
 log_cpm_before <- cpm(d0, log=TRUE)
 # After filtering
 log_cpm_after_manual <- cpm(d0_filtered, log=FALSE,normalized.lib.sizes=FALSE)
-log_cpm_after_manual <- log2(log_cpm_after_manual+1)
+#log_cpm_after_manual <- log2(log_cpm_after_manual+1)
 log_cpm_after <- log_cpm_after_manual
 # Plot density distributions
 par(mfrow=c(1,2))
 plot(density(log_cpm_before), main="Before filtering", xlab="log2 counts")
 plot(density((log_cpm_after)), main="After filtering", xlab="log2 counts")
 ```
+
+
+
+```{r}
+write.table(log_cpm_after, "/groups/nordborg/projects/ddm1_resilencing/04_output/ase/expression_nonase.csv", quote = F, row.names = T)
+```
+
 ## PCA of genes and TEs colored based on the allele
 ```{r}
 library(ggplot2)
 
 # Separate the two allele matrices
 tair <- log_cpm_after[grepl("_tair10$", rownames(log_cpm_after)), , drop = FALSE]
-acc  <- log_cpm_after[grepl("_100752$", rownames(log_cpm_after)), , drop = FALSE]
+acc <- log_cpm_after[grepl("_100752(\\.[0-9]+)?$", rownames(log_cpm_after)), , drop = FALSE]
 
 # Strip suffixes to get matching feature IDs
 rownames(tair) <- sub("_tair10$", "", rownames(tair))
-rownames(acc)  <- sub("_100752$", "", rownames(acc))
+rownames(acc) <- sub("_100752(\\.[0-9]+)?$", "", rownames(acc))
 
 # Split feature IDs into Genes vs TEs
 gene_ids <- grep("^AT[1-5]G",  intersect(rownames(tair), rownames(acc)), value = TRUE)
-te_ids   <- grep("^AT[1-5]TE", intersect(rownames(tair), rownames(acc)), value = TRUE)
+te_ids <- grep("^AT[1-5]TE[0-9]+$", intersect(rownames(tair), rownames(acc)), value = TRUE) ## Need to be fixed?
 
 
 meta_ase <- data.frame(
@@ -127,15 +134,22 @@ run_pca <- function(ids, tair, acc, meta_ase, title) {
             x = paste0("PC1 (", round(var_exp[1], 1), "%)"),
             y = paste0("PC2 (", round(var_exp[2], 1), "%)")
         ) +
-        theme_classic()
+        theme_bw(base_size = 16)
 }
 
 p_genes <- run_pca(gene_ids, tair, acc, meta_ase, title = "PCA - Genes")
-p_tes   <- run_pca(te_ids,   tair, acc, meta_ase, title = "PCA - TEs")
+p_tes   <- run_pca(te_ids, tair, acc, meta_ase, title = "PCA - TEs")
 
 p_genes
 p_tes
 ```
+################################################################
+################## Quantification of ASE  ##################
+########################################################
+```{r}
+ase_liftov <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/ase/ase_liftov_annotation.csv")
+```
+
 ## Upload probabilities defined by RSEM and attach them to the analysis
 ```{r}
 library(data.table)
@@ -159,6 +173,22 @@ genes[, `:=`(
   gene_id = sub("^(AT[1-5]G[0-9]{5}).*$", "\\1", transcript_id),
   genome  = sub("^.*_([A-Za-z0-9]+)$", "\\1", transcript_id)
 )]
+
+## Select features
+features <- aln[grepl("^AT[1-5]G[0-9]{5}\\.[0-9]+_[A-Za-z0-9]+$", transcript_id) |
+                 grepl("TE[0-9]+", transcript_id)]
+
+features[, `:=`(
+  feature_id = ifelse(
+    grepl("^AT[1-5]G", transcript_id),
+    sub("^(AT[1-5]G[0-9]{5}).*$", "\\1", transcript_id),
+    sub("^(.*TE[0-9]+).*$", "\\1", transcript_id)
+  ),
+  genome = sub("^.*_([A-Za-z0-9]+)$", "\\1", transcript_id),
+  feature_type = ifelse(grepl("^AT[1-5]G", transcript_id), "gene", "TE")
+)]
+features[, genome := sub("^.*_([A-Za-z0-9]+)(\\.[0-9]+)?$", "\\1", transcript_id)] ## Get the genome right 
+genes <- features
 ```
 
 ```{r}
@@ -167,450 +197,96 @@ genes[, `:=`(
 ##   - RSEM weight assigned to tair10
 ##   - RSEM weight assigned to 100752
 ##   - STAR NH value for that read
+## Now generalized to work for BOTH genes and TEs (feature_id/feature_type)
 ## ---------------------------------------------------------
 
-## Step 1: For each read + gene + genome, add up the RSEM weight
+## Step 1: For each read + feature + genome, add up the RSEM weight
 ## (this collapses isoforms, since multiple transcripts of the
-## same gene/genome are summed together)
-weights_by_read_gene_genome <- genes[
+## same feature/genome are summed together)
+weights_by_read_feature_genome <- features[
   , .(weight = sum(RSEM_ZW)),
-  by = .(sample_id, read_id, gene_id, genome)
+  by = .(sample_id, read_id, feature_id, genome, feature_type)
 ]
 
 ## Step 2: Turn the "genome" column into two separate columns
-## (one per genome), so each read+gene has its weights side by side
+## (one per genome), so each read+feature has its weights side by side
 weights_wide <- dcast(
-  weights_by_read_gene_genome,
-  sample_id + read_id + gene_id ~ genome,
+  weights_by_read_feature_genome,
+  sample_id + read_id + feature_id + feature_type ~ genome,
   value.var = "weight",
   fill = 0
 )
+
 ## Step 3: Get the STAR NH value for each read
-## (take the max in case a read has multiple NH entries recorded)
-nh_per_read <- genes[
-  , .(NH = max(STAR_NH)),
-  by = .(sample_id, read_id)
-]
 ## Check for malformed records
 nh_per_read <- unique(
-  genes[, .(sample_id, read_id, NH = STAR_NH)]
+  features[, .(sample_id, read_id, NH = STAR_NH)]
 )
-anyDuplicated(nh_per_read, by = c("sample_id", "read_id")) # If 0 -each read has its unique value 
+anyDuplicated(nh_per_read, by = c("sample_id", "read_id")) # If 0 - each read has its unique value
+
 ## Step 4: Attach the NH value onto our weights table
-## This matches rows by sample_id + read_id, and copies NH over
 weights_wide[
   nh_per_read,
   NH := i.NH,
   on = c("sample_id", "read_id")
 ]
 
+read_feature <- weights_wide
 
-read_gene <- weights_wide
-
-gene_table <- read_gene[
+feature_table <- read_feature[
   tair10 + `100752` > 0,
   .(
     supporting_reads = .N,
     NH_median = as.numeric(median(NH, na.rm = TRUE)),
     multimapped_frac = mean(NH > 1, na.rm = TRUE),
-    prob_tair10 = sum(tair10) / (sum(tair10) + sum(`100752`))
+    prob_tair10 = sum(tair10) / (sum(tair10) + sum(`100752`)),
+    prob_100752_v2 = sum(`100752`) / (sum(tair10) + sum(`100752`))
   ),
-  by = .(sample_id, gene_id)
+  by = .(sample_id, feature_id, feature_type)
 ]
 
-gene_table[, prob_100752 := 1 - prob_tair10]
+feature_table[, prob_100752 := 1 - prob_tair10]
 
-head(gene_table)
+head(feature_table)
+
+## If you want them split back out:
+gene_table <- feature_table[feature_type == "gene"]
+te_table   <- feature_table[feature_type == "TE"]
+
+ggplot(te_table, aes(prob_100752, prob_100752_v2))+geom_point()
+ggplot(gene_table, aes(prob_100752, prob_100752_v2))+geom_point()
 ```
-## Attach to RSEM and Greg's counts 
+## Write outputs 
 ```{r}
-## Check genes that have certain determination to one of the genomes. Attach RSEM counts and Greg's counts 
-library(dplyr)
+write.table(feature_table,"/groups/nordborg/projects/ddm1_resilencing/04_output/ase/tair10_liftov_annotaion_te_genes_with_weights.csv", row.names = F, quote = F)
+```
+
+########################################################
+####### Quantify TEs own annotation vs tair10 ##########
+########################################################
+
+```{r}
+## Weights  
+own_annotation_table <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/ase/own_annotaion_te_genes_with_weights.csv")
+liftov_annotation_table <- fread("/groups/nordborg/projects/ddm1_resilencing/04_output/ase/tair10_liftov_annotaion_te_genes_with_weights.csv")
+## Expression 
+own_annotation_expression <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/ase/expression_own_annotation.csv")
+tair10_annotation_expression <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/ase/expression_liftov_annotation.csv")
+```
+
+```{r}
+## Make a long format out of the expression
 library(tidyr)
-library(tibble)
+library(tidyverse)
 
-pattern <- "^(F1_(?:Col|ddm1))_([^_]+)_([^_]+)_([^_]+)_([^_]+)$"
+tair <- tair10_annotation_expression[grepl("_tair10$", rownames(tair10_annotation_expression)), , drop = FALSE]
+acc <- tair10_annotation_expression[grepl("_100752(\\.[0-9]+)?$", rownames(tair10_annotation_expression)), , drop = FALSE]
 
-tair_long <- tair %>%
-  as.data.frame(check.names = FALSE) %>%
-  rownames_to_column("ID") %>%
-  pivot_longer(
-    cols = -ID,
-    names_to = c(
-      "genotype",
-      "accession_id",
-      "replicate",
-      "plate",
-      "run_id"
-    ),
-    names_pattern = pattern,
-    values_to = "expression_tair10_nonase"
-  ) %>%
-  mutate(
-    accession_id = as.integer(accession_id),
-    replicate     = as.integer(replicate),
-    plate = as.integer(plate),
-    run_id        = as.integer(run_id)
-  )
-
-
-
-acc_long <- acc %>%
-  as.data.frame(check.names = FALSE) %>%
-  rownames_to_column("ID") %>%
-  pivot_longer(
-    cols = -ID,
-    names_to = c(
-      "genotype",
-      "accession_id",
-      "replicate",
-      "plate",
-      "run_id"
-    ),
-    names_pattern = pattern,
-    values_to = "expression_acc"
-  ) %>%
-  mutate(
-    accession_id = as.integer(accession_id),
-    replicate     = as.integer(replicate),
-    plate = as.integer(plate),
-    run_id        = as.integer(run_id)
-  )
-
-expression_ase <- inner_join(acc_long,tair_long)
-
-```
-
-```{r}
-## Read Greg's data 
-genes_ase <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/ASE_diploid_counts_filtered.csv.gz", sep=",", header=T)
-expression_ase_genes_validated <- inner_join(expression_ase,genes_ase, by=c("ID", "genotype", "accession_id", "run_id"))
-expression_ase_genes_validated$e.col.norm = expression_ase_genes_validated$e.col / expression_ase_genes_validated$expected_e.col
-expression_ase_genes_validated$e.col.norm<- log2(expression_ase_genes_validated$e.col.norm+1)
-expression_ase_genes_validated$e.acc.norm = expression_ase_genes_validated$e.acc / expression_ase_genes_validated$expected_e.acc
-expression_ase_genes_validated$e.acc.norm<- log2(expression_ase_genes_validated$e.acc.norm+1)
-## Select necessary columns 
-ase_rsem_gregs  <- expression_ase_genes_validated %>% dplyr::select(ID,run_id,genotype,expression_tair10,expression_acc,e.col.norm,e.acc.norm,n_variants_retained)
-## Attach to the probabilities
-gene_table$sample_id <- as.numeric(gene_table$sample_id)
-ase_rsem_gregs_with_probabilities <- inner_join(gene_table,ase_rsem_gregs, by=c("gene_id"="ID", "sample_id"="run_id"))
-```
-## Visualize reads clearly mapped to the accession/TAIR10
-```{r}
-setDT(ase_rsem_gregs_with_probabilities)
-ase_rsem_gregs_with_probabilities[, confidence_group := fcase(
-  prob_tair10 >= 0.99, "confident_tair10",
-  prob_100752 >= 0.99, "confident_acc",
-  prob_tair10 == 0.50 & prob_100752 == 0.50, "ambiguous_50_50",
-  default = "other"
-)]
-ase_rsem_gregs_with_probabilities <-ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$supporting_reads>10,]
-
-tair10_genes <-ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_tair10>0.99 & ase_rsem_gregs_with_probabilities$genotype=="F1_ddm1",]
-acc_genes <-ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_100752>0.99 &ase_rsem_gregs_with_probabilities$genotype=="F1_ddm1",]
-
-tair10_genes <- ase_rsem_gregs_with_probabilities[prob_tair10 > 0.99, .(sample_id, gene_id)]
-acc_genes <- ase_rsem_gregs_with_probabilities[prob_100752 > 0.99, .(sample_id, gene_id)]
-
-common_within_sample <- merge(
-  tair10_genes,
-  acc_genes,
-  by = c("sample_id", "gene_id")
-)
-nrow(common_within_sample)
-
-## Allelic bias 
-ase_rsem_gregs_with_probabilities[
-  gene_id %in% common_genes,
-  .(sample_id, gene_id, prob_tair10, prob_100752, genotype)
-][order(gene_id, sample_id)]
-```
-## Make a boxplot
-```{r}
-library(data.table)
-library(ggplot2)
-
-# Keep confidence groups of interest and genes with sufficient read support
-plot_data <- melt(
-  ase_rsem_gregs_with_probabilities[
-    confidence_group != "other"
-  ],
-  id.vars = c("sample_id", "gene_id", "confidence_group", "genotype"),
-  measure.vars = c(
-    "expression_tair10",
-    "expression_acc"
-  ),
-  variable.name = "expression_measure",
-  value.name = "expression"
-)
-
-
-# Remove missing and non-finite expression values
-plot_data <- plot_data[
-  !is.na(expression) & is.finite(expression)
-]
-```
-
-```{r}
-ggplot(
-  plot_data,
-  aes(
-    x = confidence_group,
-    y = expression,
-    fill = expression_measure
-  )
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.8),
-    outlier.alpha = 0.2
-  ) +
-  labs(
-    x = "Assignment confidence group",
-    y = "Expression",
-    fill = "Expression measure"
-  ) +
-  theme_classic() +
-  theme(
-    axis.text.x = element_text(angle = 30, hjust = 1)
-  )+facet_wrap(~genotype)
-```
-
-```{r}
-expression_tair10 <- ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_tair10>=0.99 ,]
-ggplot(expression_tair10,aes(e.acc.norm,e.col.norm))+geom_point()+ coord_equal()
-
-expression_accession <- ase_rsem_gregs_with_probabilities[ase_rsem_gregs_with_probabilities$prob_100752>=0.99,]
-ggplot(expression_accession,aes(e.acc.norm,e.col.norm))+geom_point()+ coord_equal()
-
-ggplot(expression_tair10, aes(expression_tair10, e.col.norm)) +
-  geom_point() +
-  coord_equal()
-ggplot(expression_accession, aes(expression_acc,e.acc.norm))+geom_point()+ coord_equal()
-```
-
-```{r}
-genes_by_group <- ase_rsem_gregs_with_probabilities[
-  confidence_group != "other",
-  .(genes = list(unique(gene_id))),
-  by = .(genotype, confidence_group)
-]
-
-# View counts per group
-ase_rsem_gregs_with_probabilities[
-  confidence_group != "other",
-  .(n_genes = uniqueN(gene_id)),
-  by = .(genotype, confidence_group)
-]
-
-gene_id_table <- unique(
-  ase_rsem_gregs_with_probabilities[
-    confidence_group != "other",
-    .(genotype, confidence_group, gene_id)
-  ]
-)[order(genotype, confidence_group, gene_id)]
-
-gene_id_table_filtered<-gene_id_table[gene_id_table$confidence_group=="confident_accession" & gene_id_table$genotype=="F1_ddm1",]
-write.table(gene_id_table_filtered,"/groups/nordborg/projects/ddm1_resilencing/04_output/ase/f1acc_ddm1_expressed.csv", quote = F, row.names = F)
-```
-
-## Compare ASE proportion to greg's data
-```{r}
-ase_rsem_gregs_with_probabilities$ase_greg <- ase_rsem_gregs_with_probabilities$e.col.norm   / (ase_rsem_gregs_with_probabilities$e.col.norm + ase_rsem_gregs_with_probabilities$e.acc.norm)
-
-ase_rsem_gregs_with_probabilities$ase_lisa <- ase_rsem_gregs_with_probabilities$expression_tair10   / (ase_rsem_gregs_with_probabilities$expression_tair10 + ase_rsem_gregs_with_probabilities$expression_acc)
-```
-## Compare expression without allele specificity 
-```{r}
-tair_long
-ase_rsem_gregs_with_probabilities_with_nonase <- inner_join(tair_long,ase_rsem_gregs_with_probabilities,by=c("run_id"="sample_id", "ID"="gene_id","genotype"))
-ase_rsem_gregs_with_probabilities_with_nonase[
-  , sum_of_alleles := log2(
-    (2^expression_tair10 - 1) +
-    (2^expression_acc - 1) +
-    1
-  )
-]
-ggplot(
-  ase_rsem_gregs_with_probabilities_with_nonase,
-  aes(sum_of_alleles, expression_tair10_nonase, color = confidence_group, alpha=0.2)
-) +
-  geom_point(alpha = 0.2) +
-  facet_wrap(~run_id) +
-  coord_equal() +
-  labs(
-    x = "Sum of alleles",
-    y = "Expression (TAIR10, non-ASE)",
-    color = "Confidence group"
-  ) +
-  theme_bw()+coord_equal()
-```
-```{r}
-library(data.table)
-
-setDT(ase_rsem_gregs_with_probabilities_with_nonase)
-
-outliers <- ase_rsem_gregs_with_probabilities_with_nonase[
-  confidence_group == "confident_tair10" &
-    expression_tair10_nonase > sum_of_alleles,
-  .(
-    gene_id = ID,
-    run_id,
-    expression_tair10_nonase,
-    sum_of_alleles,
-    n_variants_retained,
-    multimapped_frac
-  )
-][order(-(expression_tair10_nonase - sum_of_alleles))]
-
-outliers
-```
-
-
-
-
-
-##OLD
-
-
-
-
-
-```{r}
-# Expression matrices for each parental allele
-tair <- log_cpm_after[grepl("_tair10$", rownames(log_cpm_after)), , drop = FALSE]
-acc  <- log_cpm_after[grepl("_100752$", rownames(log_cpm_after)), , drop = FALSE]
-
-# Remove the terminal allele suffix
+# Strip suffixes to get matching feature IDs
 rownames(tair) <- sub("_tair10$", "", rownames(tair))
-rownames(acc)  <- sub("_100752$", "", rownames(acc))
-
-# Retain features represented by both alleles
-paired_features <- intersect(rownames(tair), rownames(acc))
-
-tair <- tair[paired_features, , drop = FALSE]
-acc  <- acc[paired_features, , drop = FALSE]
-
-# Ensure samples are in the same order
-stopifnot(identical(colnames(tair), colnames(acc)))
-
-# Positive = TAIR10-biased; negative = 100752-biased
-ase_delta <- tair - acc
-dim(ase_delta)
-ase_delta[1:5, ]
-```
-
-```{r}
-## Separate genes and TEs
-feature_type <- ifelse(
-    grepl("^AT[1-5]TE", rownames(ase_delta)),
-    "TE",
-    ifelse(grepl("^AT[1-5]G", rownames(ase_delta)), "Gene", "Other")
-)
-
-table(feature_type)
-```
-
-```{r}
-# Example structure only:
-# rownames(metadata) <- metadata[[<sample-column>]]
-metadata <- filteredSampleData
-# Extract Sample_id from the end of each column name in ase_delta
-sample_ids <- sub(".*_", "", colnames(ase_delta))
-# Check this worked correctly
-data.frame(colname = colnames(ase_delta), sample_id = sample_ids)
-```
-
-```{r}
-## Match with ASE data
-# Extract Sample_id from each ase_delta column
-sample_ids <- sub(".*_", "", colnames(ase_delta))
-# Match expression columns to metadata
-idx <- match(sample_ids, as.character(metadata$Sample_id))
-
-# Stop if any sample was not found
-stopifnot(!anyNA(idx))
-
-# Metadata ordered exactly like ase_delta columns
-meta_ase <- metadata[idx, , drop = FALSE]
-
-# Verify the matching
-data.frame(
-    expression_sample = colnames(ase_delta),
-    extracted_id = sample_ids,
-    metadata_id = meta_ase$Sample_id,
-    genotype = meta_ase$Genotype
-)
-# Check 
-table(meta_ase$Genotype)
-```
-
-```{r}
-## Create summary table 
-mean_ase_col <- rowMeans(
-    ase_delta[, meta_ase$Genotype == "F1_Col", drop = FALSE],
-    na.rm = TRUE
-)
-
-mean_ase_ddm1 <- rowMeans(
-    ase_delta[, meta_ase$Genotype == "F1_ddm1", drop = FALSE],
-    na.rm = TRUE
-)
-
-ase_summary <- data.frame(
-    feature_id = rownames(ase_delta),
-    ASE_Col = mean_ase_col,
-    ASE_ddm1 = mean_ase_ddm1,
-    ASE_change = mean_ase_ddm1 - mean_ase_col,
-    row.names = NULL
-)
-
-head(ase_summary)
-ase_summary[
-    order(abs(ase_summary$ASE_change), decreasing = TRUE),
-][1:20, ]
-```
-
-```{r}
-library(pheatmap)
-
-run_heatmap <- function(ids, tair, acc, meta_ase, title) {
-
-  mat <- cbind(tair[ids, ], acc[ids, ])
-  colnames(mat) <- make.unique(colnames(mat))
-
-  annotation_col <- data.frame(
-    Allele   = rep(c("TAIR10", "100752"), each = ncol(tair)),
-    Genotype = rep(meta_ase$Genotype, times = 2),
-    row.names = colnames(mat)
-  )
-
-  pheatmap(
-    mat,
-    scale = "row",
-    show_rownames = FALSE,
-    annotation_col = annotation_col,
-    clustering_distance_rows = "correlation",
-    clustering_distance_cols = "correlation",
-    main = title
-  )
-}
-
-run_heatmap(gene_ids, tair, acc, meta_ase, title = "Heatmap - Genes")
-run_heatmap(te_ids,   tair, acc, meta_ase, title = "Heatmap - TEs")
-```
-##Comparison to Greg's data 
-```{r}
-# Read Greg's data 
-genes_ase <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/ASE_diploid_counts_filtered.csv.gz", sep=",", header=T)
-```
-
-```{r}
-library(dplyr)
-library(tidyr)
-library(tibble)
+rownames(acc) <- sub("_100752(\\.[0-9]+)?$", "", rownames(acc))
 
 pattern <- "^(F1_(?:Col|ddm1))_([^_]+)_([^_]+)_([^_]+)_([^_]+)$"
-
 tair_long <- tair %>%
   as.data.frame(check.names = FALSE) %>%
   rownames_to_column("ID") %>%
@@ -634,7 +310,6 @@ tair_long <- tair %>%
   )
 
 
-
 acc_long <- acc %>%
   as.data.frame(check.names = FALSE) %>%
   rownames_to_column("ID") %>%
@@ -656,184 +331,127 @@ acc_long <- acc %>%
     plate = as.integer(plate),
     run_id        = as.integer(run_id)
   )
+
+own_annotation_expression <- full_join(acc_long,tair_long)
+tair10_annotation_expression <- full_join(acc_long,tair_long)
 ```
 
 ```{r}
-expression_ase <- inner_join(acc_long,tair_long)
+## Calculate ASE in each of the expression tables 
+own_annotation_expression$ase <- own_annotation_expression$expression_tair10/(own_annotation_expression$expression_acc+own_annotation_expression$expression_tair10)
+tair10_annotation_expression$ase <- tair10_annotation_expression$expression_tair10/(tair10_annotation_expression$expression_acc+tair10_annotation_expression$expression_tair10)
+```
 
-genes_ase <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/ASE_diploid_counts_filtered.csv.gz", sep=",", header=T)
-expression_ase_genes_validated <- inner_join(expression_ase,genes_ase, by=c("ID", "genotype", "accession_id", "run_id"))
-expression_ase_genes_validated$e.col.norm = expression_ase_genes_validated$e.col / expression_ase_genes_validated$expected_e.col
-expression_ase_genes_validated$e.acc.norm = expression_ase_genes_validated$e.acc / expression_ase_genes_validated$expected_e.acc
-library(ggpubr)
+```{r}
+## Histogram of ASE genes/TEs 
+tair10_annotation_expression$feature_type <- ifelse(
+  grepl("TE", tair10_annotation_expression$ID),
+  "TE",
+  "gene"
+)
 
-## Correlation with greg's dataa
-expression_ase_genes_validated %>%
-  filter(n_variants_retained > 5) %>%
-  ggplot(aes(expression_tair10, log2(e.col.norm + 1))) +
-  geom_point() +
-  geom_smooth(method = "loess", se = TRUE, color = "blue") +
-  stat_cor(method = "pearson", aes(label = after_stat(r.label))) +
-  facet_wrap(~genotype~replicate) +
-  coord_equal() +
-  xlim(0, max(c(
-    expression_ase_genes_validated$expression_tair10,
-    log2(expression_ase_genes_validated$e.col.norm + 1)
-  ), na.rm = TRUE)) +
-  ylim(0, max(c(
-    expression_ase_genes_validated$expression_tair10,
-    log2(expression_ase_genes_validated$e.col.norm + 1)
-  ), na.rm = TRUE))
-
-  
-expression_ase_genes_validated %>%
-  filter(n_variants_retained > 5) %>%
-  pivot_longer(
-    cols = c(e.col.norm, e.acc.norm),
-    names_to = "source",
-    values_to = "expression"
-  ) %>%
-  mutate(expression = log2(expression + 1)) %>%
-  ggplot(aes(x = expression, fill = factor(genotype))) +
-  geom_histogram(
-    alpha = 0.6,
-    position = "identity",
-    bins = 50
-  ) +
-  facet_wrap(~replicate) +
+ggplot(tair10_annotation_expression, aes(x = ase)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white", alpha = 0.8) +
+  facet_wrap(~ genotype~feature_type, scales="free") +
   labs(
-    x = "log2(normalized expression + 1)",
-    y = "Count",
-    fill = "Genotype"
+    title = "Distribution of ASE by genotype",
+    x = "ASE",
+    y = "Count"
   ) +
-  theme_bw()
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank())
 ```
 
 ```{r}
-expression_ase_genes_validated$ase_propotion <- expression_ase_genes_validated$expression_tair10/(expression_ase_genes_validated$expression_tair10+expression_ase_genes_validated$expression_acc)
+## Own annotation 
+own_annotation_expression$feature_type <- ifelse(
+  grepl("TE", own_annotation_expression$ID),
+  "TE",
+  "gene"
+)
 
-expression_ase_genes_validated$ase_propotion_greg <- expression_ase_genes_validated$e.col.norm/(expression_ase_genes_validated$e.col.norm+expression_ase_genes_validated$e.acc.norm)
+own_annotation_expression_with_probabilities <- inner_join(own_annotation_expression,own_annotation_table, by=c( "ID"="feature_id","run_id"="sample_id", "feature_type") )
 
-library(dplyr)
-library(ggplot2)
+ggplot(own_annotation_expression_with_probabilities, aes(x = ase)) +
+  geom_histogram(bins = 10, fill = "steelblue", color = "white", alpha = 0.8) +
+  facet_wrap(~ genotype~feature_type, scales="free") +
+  labs(
+    title = "Distribution of ASE by genotype",
+    x = "ASE",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank())
+## Add probability from the ASE tables
 
-replicate <- sort(unique(expression_ase_genes_validated$replicate))
-colors <- setNames(scales::hue_pal()(length(replicate)), replicate)
-
-expression_ase_genes_validated %>%
-  ggplot(aes(ase_propotion_greg, fill = factor(replicate))) +
-  geom_histogram(alpha = 0.6, position = "identity", bins = 50) +
-  scale_fill_manual(values = colors) +
-  labs(x = "ASE proportion", fill = "replicate") +
-  theme_bw() +
-  facet_wrap(~genotype~replicate)
-
-
-expression_ase_genes_validated %>%
-  filter(n_variants_retained > 3) %>%
-  ggplot(aes(ase_propotion_greg, ase_propotion)) +
-  geom_point() +
-  facet_wrap(~genotype ~ replicate)
-```
-
-## Compare to the expression levels detected by rsem 
-```{r}
-library(tximport)
-# Base directory for RSEM outputs
-rsem_base_dir <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/nonase_quantification/nonase_quantification"
-sampledata <- read.table("/groups/nordborg/projects/ddm1_resilencing/10_metadata/tm3_metadata_with_ibdpainting_all_samples.txt", header=T, sep="\t")
-# Construct sample paths 
-sample_paths <- file.path(rsem_base_dir)
-# Collect gene results 
-files <- file.path(sample_paths, paste0(sampledata$Sample_id, ".genes.results"))
-# Check which files exist
-existing_files <- files[file.exists(files)]
-# Get the sample IDs from sampledata that correspond to existing files
-file_indices <- which(file.exists(files))
-fileSampleIDs <- sampledata$Sample_id[file_indices]
-# Create a named vector for tximport with proper sample IDs
-names(existing_files) <- fileSampleIDs
-# Verify the names are correct
-head(names(existing_files))
-# Perform tximport for RSEM quantification
-txi.rsem <- tximport(existing_files, type = "rsem")
-
-# Check column names now
-head(colnames(txi.rsem$counts))
-dim(txi.rsem$counts)
-
-# Filter sampledata 
-filteredSampleData <- sampledata[sampledata$Sample_id %in% fileSampleIDs, ]
-rownames(filteredSampleData) <- filteredSampleData$Sample_id
-
-# Subset txi.rsem
-sampleNames <- rownames(filteredSampleData)
-
-# Subset the txi.rsem object
-txi.rsem$counts <- txi.rsem$counts[, sampleNames, drop = FALSE]
-txi.rsem$abundance <- txi.rsem$abundance[, sampleNames, drop = FALSE]
-txi.rsem$length <- txi.rsem$length[, sampleNames, drop = FALSE]
-
-# Now extract counts
-counts <- txi.rsem$counts
-rownames(counts) <-rownames(txi.rsem$counts)
-dim(counts)
-```
-# Attach CNV in tair10
-```{r}
-expression_ase_te <- expression_ase[grep("^AT[1-5]TE", expression_ase$ID), ]
-# Attach tair10 CNV
-tair10_cnv <- read.table("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_Transposable_Elements.txt", header=T)
-
-library(dplyr)
-library(stringr)
-
-expression_ase_te <- expression_ase_te %>%
+own_annotation_expression_with_probabilities <- own_annotation_expression_with_probabilities %>%
   mutate(
-    OP = if_else(str_detect(ID, "_OP$"), "OP", "cannonical"),
-    ID = str_remove(ID, "_OP$")
+    expression_tair10 = ifelse(is.na(expression_tair10), 0, expression_tair10),
+    expression_acc = ifelse(is.na(expression_acc), 0, expression_acc)
   )
-## Add TEs 
-expression_ase_te <- inner_join(expression_ase_te,tair10_cnv, by=c("ID"="Transposon_Name"))
-```
-```{r}
-library(pheatmap)
-library(tidyr)
-
-library(ggplot2)
-
-ggplot(expression_ase_te, aes(expression_tair10, (expression_acc ), color = Transposon_Super_Family)) +
-  geom_point(alpha = 0.6) +
-  facet_wrap(~genotype~replicate)
-```
 
 
-```{r}
-lanas_results <- read.table("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/per_genome_by_family.tsv", header=T)
-```
-## 
-```{r}
-lanas_results_accession <- lanas_results[lanas_results$genome_id=="100752",]
+own_annotation_expression_with_probabilities_tes <-own_annotation_expression_with_probabilities[own_annotation_expression_with_probabilities$feature_type=="TE",]
 
-expression_ase_te_with_superfamily <- left_join(expression_ase_te,lanas_results_accession,by=c("Transposon_Super_Family"="te_class"))
-expression_ase_te_with_superfamily$ase_proportion <- expression_ase_te_with_superfamily$expression_tair10/(expression_ase_te_with_superfamily$expression_tair10+expression_ase_te_with_superfamily$expression_tair10)
-
-expression_ase_te_with_superfamily_prop05<-expression_ase_te_with_superfamily[expression_ase_te_with_superfamily$ase_proportion==0.5,]
-hist(expression_ase_te_with_superfamily_prop05$n_copies)
-```
-
-
-```{r}
-head(log_cpm_after)
-head(expression_ase)
+hist(own_annotation_expression_with_probabilities_tes$prob_100752)
 
 library(dplyr)
-library(tidyr)
-library(tibble)
+
+own_annotation_expression_with_probabilities %>%
+  filter(prob_100752 > 0.8, feature_type == "TE") %>%
+  ggplot(aes(x = genotype, y = log2(expression_tair10 + 1))) +
+  geom_boxplot() +
+  labs(title = "Distribution of accession TE expression (no per-locus TAIR10 pairing)") +
+  theme_classic()
+```
+
+
+## Attach to RSEM and Greg's counts 
+```{r}
+## Read Greg's data 
+genes_ase <- fread("/groups/nordborg/projects/epiclines/010.GbM_vs_Expr_in_F1s/03.processing/02.kannomes/004.filtered_ASE_table/forLiza_new/ASE_diploid_counts_filtered.csv.gz", header=T)
+genes_ase$e.col.norm = genes_ase$e.col / genes_ase$expected_e.col
+genes_ase$e.acc.norm = genes_ase$e.acc / genes_ase$expected_e.acc
+genes_ase$ase <- genes_ase$e.col.norm/(genes_ase$e.col.norm+genes_ase$e.acc.norm)
+```
+
+```{r}
+tair10_annotation_expression_with_probabilities_genes <- tair10_annotation_expression_with_probabilities[tair10_annotation_expression_with_probabilities$feature_type=="gene",]
+## Add greg's data 
+tair10_annotation_expression_with_probabilities_genes_gregsase <- inner_join(
+  tair10_annotation_expression_with_probabilities_genes,
+  genes_ase,
+  by = c("ID", "run_id"),
+  suffix = c("_rsem", "_greg")
+)
+
+tair10_annotation_expression_with_probabilities_genes_gregsase %>% 
+  filter(supporting_reads > 10 & n_variants_retained > 5) %>% 
+  ggplot(aes(x = ase_rsem, y = ase_greg, color = prob_tair10)) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  facet_wrap(~ run_id) +
+  scale_color_viridis_c() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  labs(
+    x = "ASE genes (Lisa)",
+    y = "ASE genes (Greg)",
+    color = "prob TAIR10, RSEM"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+
+## Show allelic bias in TEs and genes
+```{r}
+non_ase_rsem <- read.table("/groups/nordborg/projects/ddm1_resilencing/04_output/ase/expression_nonase.csv")
 
 pattern <- "^(F1_(?:Col|ddm1))_([^_]+)_([^_]+)_([^_]+)_([^_]+)$"
-
-tair_long <- log_cpm_after %>%
+tair_nonase <- non_ase_rsem %>%
   as.data.frame(check.names = FALSE) %>%
   rownames_to_column("ID") %>%
   pivot_longer(
@@ -846,267 +464,177 @@ tair_long <- log_cpm_after %>%
       "run_id"
     ),
     names_pattern = pattern,
-    values_to = "expression_joined"
+    values_to = "expression_tair10_nonase"
   ) %>%
   mutate(
     accession_id = as.integer(accession_id),
-    replicate = as.integer(replicate),
+    replicate     = as.integer(replicate),
     plate = as.integer(plate),
-    run_id = as.integer(run_id)
-  )
-
-expression_ase$both_alleles <- expression_ase$expression_acc+expression_ase$expression_tair10
-expression_check <- inner_join(expression_ase_genes_validated, expression_ase, by=c("ID", "genotype", "accession_id"))
-expression_ase_genes_validated$expression_joined <- expression_ase_genes_validated$e.col.norm+expression_ase_genes_validated$e.acc.norm
-
-ggplot(expression_check, aes(both_alleles,log2(expression_joined+1)))+geom_point()+xlab("ASE TAIR10 allele+accession allele")+ylab("non ASE expression")
-
-
-expression_ase_genes_validated %>%
-  mutate(
-    feature_type = case_when(
-      grepl("^AT[1-5]G", ID)  ~ "Genes",
-      grepl("^AT[1-5]TE", ID) ~ "TEs",
-      TRUE                    ~ "Other"
-    )
-  ) %>%
-  filter(feature_type %in% c("Genes", "TEs")) %>%
-  ggplot(aes(both_alleles, expression_joined)) +
-  geom_point(alpha = 0.5) +
-  facet_wrap(~feature_type + genotype, scales = "free") +
-  xlab("ASE TAIR10 allele + accession allele") +
-  ylab("Non-ASE expression") +
-  theme_bw()
-```
-## Analyze abigolosly assigned reads 
-```{r}
-library(tidyverse)
-
-input_file <- "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/300377.ambiguous_subgenome_mappings.tsv"
-sample_name <- "300471"
-
-mapping <- read_tsv(input_file, show_col_types = FALSE) %>%
-  mutate(
-    ZW = as.numeric(ZW),
-    NH = as.integer(NH),
-    # Convert:
-    # AT1G74230.1_tair10  -> AT1G74230.1
-    # AT1G74230.1_100752 -> AT1G74230.1
-    transcript_pair = str_remove(
-      transcript_id,
-      "_(tair10|100752)$"
-    )
-  )
-```
-## Calculate parental probabilities
-```{r}
-library(dplyr)
-library(tidyr)
-library(stringr)
-
-library(dplyr)
-library(tidyr)
-library(stringr)
-
-mapping_gene <- mapping %>%
-  mutate(
-    gene_pair = str_remove(
-      transcript_id,
-      "\\.\\d+_(tair10|100752)$"
-    )
+    run_id        = as.integer(run_id)
   )
 ```
 
 ```{r}
-parental_probabilities <- mapping_gene %>%
-  filter(
-    NH > 1,
-    subgenome %in% c("tair10", "100752"),
-    !is.na(ZW)
-  ) %>%
-  group_by(
-    sample,
-    read_id,
-    gene_pair,
-    subgenome
-  ) %>%
-  summarise(
-    probability = sum(ZW),
-    .groups = "drop"
-  ) %>%
-  pivot_wider(
-    names_from = subgenome,
-    values_from = probability,
-    values_fill = 0
-  ) %>%
-  mutate(
-    gene_pair_posterior_mass = tair10 + `100752`,
+tair10_annotation_expression_with_probabilities_genes_gregsase_with_nonase <- inner_join(tair10_annotation_expression_with_probabilities_genes_gregsase, tair_nonase)
+tair10_annotation_expression_with_probabilities_genes_gregsase_with_nonase$sum <- tair10_annotation_expression_with_probabilities_genes_gregsase_with_nonase$expression_tair10+tair10_annotation_expression_with_probabilities_genes_gregsase_with_nonase$expression_acc
 
-    tair10_fraction = if_else(
-      gene_pair_posterior_mass > 0,
-      tair10 / gene_pair_posterior_mass,
-      NA_real_
-    ),
-
-    `100752_fraction` = if_else(
-      gene_pair_posterior_mass > 0,
-      `100752` / gene_pair_posterior_mass,
-      NA_real_
-    ),
-
-    ambiguity_balance = 2 * pmin(
-      tair10_fraction,
-      `100752_fraction`
-    )
-  )
-
+tair10_annotation_expression_with_probabilities_genes_gregsase_with_nonase %>% 
+  filter(supporting_reads > 10 & n_variants_retained > 3) %>% 
+  ggplot(aes(x = log2(sum+1), y = log2(expression_tair10_nonase+1), color = prob_tair10)) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  facet_wrap(~ run_id, scales="free") +
+  scale_color_viridis_c() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  labs(
+    x = "TAIR10 allele +accession allele",
+    y = "TAIR10 allele expression mapping only to TAIR10",
+    color = "P(TAIR10)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(strip.text = element_text(face = "bold"))
+```
+################################
+############# TE ASE ########
+################################
+```{r}
+own_annotation_table
+liftov_annotation_table
+```
+## Get boxplot on expressed TEs 
+```{r}
+own_annotation_expression$ase <- own_annotation_expression$expression_tair10/(own_annotation_expression$expression_acc+own_annotation_expression$expression_tair10)
+tair10_annotation_expression$ase <- tair10_annotation_expression$expression_tair10/(tair10_annotation_expression$expression_acc+tair10_annotation_expression$expression_tair10)
 ```
 
 ```{r}
-parental_probabilities %>%
-  select(
-    sample,
-    read_id,
-    gene_pair,
-    tair10,
-    `100752`,
-    gene_pair_posterior_mass,
-    tair10_fraction,
-    `100752_fraction`,
-    ambiguity_balance
-  ) %>%
-  print(n = 10)
+liftov_annotation_table_with_expression <- left_join(liftov_annotation_table, tair10_annotation_expression, by=c("feature_id"="ID", "sample_id"="run_id", "feature_type"))
 
+own_annotation_table$feature_type <- ifelse(
+  grepl("TE", own_annotation_table$feature_id),
+  "TE",
+  "gene"
+)
 
+own_annotation_expression$feature_type <- ifelse(
+  grepl("TE", own_annotation_expression$ID),
+  "TE",
+  "gene"
+)
+
+own_annotation_table_with_expression <- left_join(own_annotation_table, own_annotation_expression, by=c("feature_id"="ID", "sample_id"="run_id", "feature_type"))
 ```
 
-
-```{r}
-gene_probabilities <- parental_probabilities %>%
-  group_by(sample, gene_pair) %>%
-  summarise(
-    n_molecules = n_distinct(read_id),
-
-    tair10_expected_molecules = sum(tair10, na.rm = TRUE),
-
-    `100752_expected_molecules` = sum(
-      `100752`,
-      na.rm = TRUE
-    ),
-
-    total_pair_posterior_mass = sum(
-      gene_pair_posterior_mass,
-      na.rm = TRUE
-    ),
-
-    .groups = "drop"
-  ) %>%
-  mutate(
-    tair10_gene_fraction = if_else(
-      total_pair_posterior_mass > 0,
-      tair10_expected_molecules /
-        total_pair_posterior_mass,
-      NA_real_
-    ),
-
-    `100752_gene_fraction` = if_else(
-      total_pair_posterior_mass > 0,
-      `100752_expected_molecules` /
-        total_pair_posterior_mass,
-      NA_real_
-    ),
-
-    gene_ambiguity_balance = 2 * pmin(
-      tair10_gene_fraction,
-      `100752_gene_fraction`
-    )
-  )
-
-```
-
-```{r}
-head(gene_probabilities)
-
-equal_prob <-gene_probabilities[gene_probabilities$tair10_gene_fraction==0.5,]
-head(equal_prob)
-```
-## Quantify 
 ```{r}
 library(data.table)
+library(ggplot2)
 
-aln <- fread(
-  "/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/rsem_quantification/all_alignments_combined.tsv",
-  header = FALSE, sep = "\t",
-  col.names = c("sample_id", "read_id", "transcript_id", "STAR_NH", "RSEM_ZW"),
-  na.strings = "NA"
-)[!is.na(RSEM_ZW)]
+# Ensure it's a data.table
+dt <- as.data.table(liftov_annotation_table_with_expression)
 
-aln[, `:=`(
-  sample_id = as.character(sample_id),
-  STAR_NH = as.integer(STAR_NH),
-  RSEM_ZW = as.numeric(RSEM_ZW)
-)]
+# Confident mapping = highest allele-assignment probability > 80%
+dt[, confident_prob := pmax(prob_tair10, prob_100752)]
+dt_conf <- dt[confident_prob > 0.8]
 
-genes <- aln[grepl("^AT[1-5]G[0-9]{5}\\.[0-9]+_(tair10|100752)$", transcript_id)]
-genes[, `:=`(
-  gene_id = sub("^(AT[1-5]G[0-9]{5}).*$", "\\1", transcript_id),
-  genome  = sub("^.*_(tair10|100752)$", "\\1", transcript_id)
-)]
-```
-
-```{r}
-## 2. Collapse isoforms -> read x gene x genome, then to gene_table directly
-read_gene <- dcast(
-  genes[, .(w = sum(RSEM_ZW)), by = .(sample_id, read_id, gene_id, genome)],
-  sample_id + read_id + gene_id ~ genome, value.var = "w", fill = 0
+# Reshape to long format so both expression_acc (100752) and expression_tair10
+# can be plotted side by side per feature
+dt_long <- melt(
+  dt_conf,
+  id.vars = c("sample_id", "feature_id", "feature_type", "genotype",
+              "accession_id", "replicate", "plate"),
+  measure.vars = c("expression_acc", "expression_tair10"),
+  variable.name = "allele_genome",
+  value.name = "expression"
 )
-setnames(read_gene, c("tair10", "100752"), c("w_tair10", "w_100752"), skip_absent = TRUE)
-for (col in c("w_tair10", "w_100752")) if (!col %in% names(read_gene)) read_gene[, (col) := 0]
 
-read_gene[genes[, .(NH = max(STAR_NH)), by = .(sample_id, read_id)],
-          NH := i.NH, on = c("sample_id", "read_id")]
+# Cleaner labels for the allele/genome of origin
+dt_long[, allele_genome := factor(allele_genome,
+                                   levels = c("expression_acc", "expression_tair10"),
+                                   labels = c("100752", "TAIR10"))]
 
-gene_table <- read_gene[
-  w_tair10 + w_100752 > 0,
-  .(
-    supporting_reads = .N,
-    NH_median = as.numeric(median(NH, na.rm = TRUE)),
-    multimapped_frac = mean(NH > 1, na.rm = TRUE),
-    prob_tair10 = sum(w_tair10) /
-      (sum(w_tair10) + sum(w_100752))
-  ),
-  by = .(sample_id, gene_id)
-]
+# Boxplot: expression (log10 scale) by feature_type, split by allele/genome,
+# faceted by genotype
+dt_long_tair10 <- na.omit(dt_long)
+dt_long_tair10$annotation <- 'tair10'
+ggplot(dt_long, aes(x = feature_type, y = log2(expression+1), fill = allele_genome)) +
+  geom_boxplot(outlier.size = 0.5, position = position_dodge(width = 0.8)) +
+  facet_wrap(~ genotype) +
+  labs(
+    title = "Gene and TE expression by genotype (mapping probability > 80%)",
+    x = "Feature type",
+    y = "Expression (log2)",
+    fill = "Heplotype / genome"
+  ) +
+  theme_bw(base_size = 14) 
+```
+```{r}
+# Ensure it's a data.table
+dt <- as.data.table(own_annotation_table_with_expression)
 
-gene_table[, prob_100752 := 1 - prob_tair10]
+# Confident mapping = highest allele-assignment probability > 80%
+dt[, confident_prob := pmax(prob_tair10, prob_100752)]
+dt_conf <- dt[confident_prob > 0.8]
+
+# Reshape to long format so both expression_acc (100752) and expression_tair10
+# can be plotted side by side per feature
+dt_long <- melt(
+  dt_conf,
+  id.vars = c("sample_id", "feature_id", "feature_type", "genotype",
+              "accession_id", "replicate", "plate"),
+  measure.vars = c("expression_acc", "expression_tair10"),
+  variable.name = "allele_genome",
+  value.name = "expression"
+)
+
+# Cleaner labels for the allele/genome of origin
+dt_long[, allele_genome := factor(allele_genome,
+                                   levels = c("expression_acc", "expression_tair10"),
+                                   labels = c("100752", "TAIR10"))]
+
+# Boxplot: expression (log10 scale) by feature_type, split by allele/genome,
+# faceted by genotype
+dt_long_own_annotation <- na.omit(dt_long)
+dt_long_own_annotation$annotation <- 'own'
+ggplot(dt_long, aes(x = feature_type, y = log2(expression+1), fill = allele_genome)) +
+  geom_boxplot(outlier.size = 0.5, position = position_dodge(width = 0.8)) +
+  facet_wrap(~ genotype) +
+  labs(
+    title = "Gene and TE expression by genotype (mapping probability > 80%)",
+    x = "Feature type",
+    y = "Expression (log2)",
+    fill = "Heplotype / genome"
+  ) +
+  theme_bw(base_size = 14)
 ```
 
 ```{r}
-hist(gene_table$prob_100752)
+library(data.table)
+library(ggplot2)
+
+# Combine the two annotation sources into one table
+dt_combined <- rbindlist(list(dt_long_own_annotation, dt_long_tair10), use.names = TRUE)
+
+# Boxplot: expression by feature_type, colored by annotation source,
+# faceted by genotype (and optionally by allele_genome)
+dt_combined <-dt_combined[dt_combined$feature_type=="TE" & dt_combined$genotype=="F1_ddm1",]
+ggplot(dt_combined, aes(x = annotation, y = log2(expression+1), fill = allele_genome)) +
+  geom_boxplot(outlier.size = 0.5, position = position_dodge(width = 0.8)) +
+  labs(
+    title = "Gene and TE expression by annotation source",
+    x = "Annotation",
+    y = "Expression (log2)",
+    fill = "Annotation"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(strip.text = element_text(face = "bold"))
 ```
-
-
-##Plot
 ```{r}
-dt_plot <- gene_table[sample_id == unique(sample_id)[1]]
-library(scales)
-# Plot 1: probability vs support
-ggplot(dt_plot, aes(prob_tair10, supporting_reads, color = multimapped_frac)) +
-  geom_point(alpha = 0.5) +
-  scale_y_log10(labels = comma) +
-  scale_color_viridis_c(option = "magma", direction = -1, labels = percent_format()) +
-  geom_vline(xintercept = c(0.2, 0.5, 0.8), linetype = "dashed", color = "grey50") +
-  geom_hline(yintercept = 10, linetype = "dotted", color = "red") +
-  labs(x = "P(tair10)", y = "Supporting reads (log10)", color = "STAR multimap %") +
-  theme_classic()
-
-# Plot 2: distribution
-ggplot(dt_plot, aes(prob_tair10, fill = supporting_reads >= 20)) +
-  geom_histogram(binwidth = 0.025, position = "identity", alpha = 0.6) +
-  scale_fill_manual(values = c("TRUE" = "#2C7BB6", "FALSE" = "#D7191C"),
-                     labels = c("< 20 reads", ">= 20 reads")) +
-  labs(x = "P(tair10)", y = "Gene count", fill = "Support") +
-  theme_classic()
-## Supporting reads filter
-dt_plot <- dt_plot[dt_plot$supporting_reads>20,]
 ```
+
+
+
+
+
+
+
+
+
