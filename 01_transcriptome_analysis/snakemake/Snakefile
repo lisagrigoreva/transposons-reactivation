@@ -8,35 +8,63 @@ import os
 configfile: "config.yaml"
 
 # ============================================================================
-# Sample Loading
-# ============================================================================
-
-samples = None
-SAMPLES = []
-
-if os.path.exists(config["sample_sheet"]):
-    samples = pd.read_csv(config["sample_sheet"], sep="\t", dtype=str)
-    samples["unique_id"] = samples["unique_id"].str.strip()
-    samples = samples.set_index("unique_id", drop=False)  # enables lookups by unique_id
-    SAMPLES = samples["unique_id"].tolist()
-else:
-    raise FileNotFoundError(f"Sample sheet not found: {config['sample_sheet']}")
-
-# ============================================================================
 # Include Rule Modules
 # ============================================================================
 
 include: "rules/00_preprocessing.smk"
 include: "rules/01_trimming.smk"
+include: "rules/02_qc.smk"
+include: "rules/03_alignment.smk"
+include: "rules/04_deduplication.smk"
+include: "rules/05_quantification.smk"
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def get_all_samples():
+    """Get list of all samples after checkpoint completes"""
+    checkpoints.build_sample_sheet.get()
+    samples = pd.read_csv(config["sample_sheet"], sep="\t", dtype=str)
+    return samples["unique_id"].str.strip().tolist()
+
+
+def per_sample(*parts):
+    """Input function: one file per sample.
+    Example: per_sample("dedup", "{sample}.dedup.bam.bai")
+    """
+    pattern = os.path.join(config["outdir"], *parts)
+    return lambda w: expand(pattern, sample=get_all_samples())
 
 # ============================================================================
 # Target Rules
 # ============================================================================
 
+# Default target (first rule): the complete pipeline
 rule all:
     input:
-        expand(
-            os.path.join(config["outdir"], "umi_trimmed", "{sample}.fastq.gz"),
-            sample=SAMPLES
-        )
-    default_target: True
+        per_sample("umi_trimmed", "{sample}.fastq.gz"),
+        per_sample("dedup", "{sample}.dedup.bam.bai"),
+        per_sample("dedup", "{sample}.transcriptome_dedup.bam"),
+        per_sample("quantification", "{sample}.genes.results"),
+        os.path.join(config["outdir"], "multiqc_trimming", "multiqc_trimming_report.html"),
+        os.path.join(config["outdir"], "qc", "multiqc_report.html")
+
+# Stage targets: run the pipeline one stage at a time
+rule all_trimming_qc:
+    input:
+        os.path.join(config["outdir"], "multiqc_trimming", "multiqc_trimming_report.html")
+
+rule all_alignment:
+    input:
+        per_sample("aligned", "{sample}", "Aligned.sortedByCoord.out.bam.bai"),
+        per_sample("qc", "samtools_flagstat", "{sample}.flagstat.txt")
+
+rule all_dedup:
+    input:
+        per_sample("dedup", "{sample}.dedup.bam.bai"),
+        per_sample("dedup", "{sample}.transcriptome_dedup.bam")
+
+rule all_quant:
+    input:
+        per_sample("quantification", "{sample}.genes.results")

@@ -1,64 +1,1122 @@
----
-title: "3' QuantSeq UMI Pipeline"
-author: "Modular Snakemake Workflow"
+--
+title: "3' QuantSeq RNA-seq Analysis Pipeline"
+subtitle: "DDM1 Resilencing Project - Transcriptome Analysis"
+author: "Nordborg Lab"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
 ---
 
-## Overview
-
-Automated pipeline for processing 3' QuantSeq RNA-seq data with UMI extraction and trimming.
-
----
-
-## Directory Structure
-
-```
-.
-├── Snakefile                        # Main workflow orchestrator
-├── config.yaml                      # Configuration file
-├── rules/
-│   ├── 00_preprocessing.smk         # Extract archives, build sample sheet
-│   └── 01_trimming.smk              # fastp UMI extraction and trimming
-├── scripts/
-│   ├── build_sample_sheet.py       # Generate unique_id from filenames
-│   ├── find_missing_samples.sh     # Quality control helper
-│   └── check_trimming_qc.sh        # Trimming QC validation
-└── /scratch-cbe/.../snakemake_run/
-    ├── extracted/                   # Raw extracted FASTQs
-    ├── sample_sheet.csv             # Generated sample metadata
-    └── umi_trimmed/                 # Final UMI-processed FASTQs
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = FALSE,
+  comment = "#>",
+  collapse = TRUE
+)
 ```
 
 ---
 
-## Quick Start
+# Pipeline Overview
+
+This Snakemake pipeline processes **3' QuantSeq FWD libraries with UMI** for comprehensive transcriptome analysis of the DDM1 resilencing project.
+
+## Experimental Design
+
+```{r overview-table, echo=FALSE, eval=TRUE}
+library(knitr)
+
+overview <- data.frame(
+  Parameter = c(
+    "Library Type",
+    "UMI Length",
+    "UMI Location",
+    "Total Samples",
+    "Sequencing Runs",
+    "Read Configuration"
+  ),
+  Value = c(
+    "3' QuantSeq FWD",
+    "12 bp",
+    "R2 (embedded in R1 header after extraction)",
+    "~2086",
+    "30",
+    "Paired-end (R2 discarded after UMI extraction)"
+  )
+)
+
+kable(overview, caption = "Experimental Overview")
+```
+
+## Workflow Steps
+
+The pipeline executes the following processing steps:
+
+1. **Extraction** - Decompress raw sequencing archives
+2. **UMI Trimming** - Extract 12bp UMI from R2, embed in R1 header, discard R2
+3. **Quality Control** - FastQC on trimmed reads
+4. **STAR Alignment** - Align to reference genome with TE annotation
+5. **UMI Deduplication** - Remove PCR duplicates using umi_tools
+6. **RSEM Quantification** - Quantify gene and isoform expression
+
+---
+
+# Key Technical Details
+
+## UMI Handling
+
+```{r umi-details, echo=FALSE, eval=TRUE}
+umi_details <- data.frame(
+  Aspect = c(
+    "UMI Length",
+    "Location",
+    "Extraction",
+    "Storage",
+    "Read 2 Fate"
+  ),
+  Implementation = c(
+    "12 bp",
+    "Read 2 (R2)",
+    "fastp --umi --umi_loc read2",
+    "Embedded in R1 FASTQ header",
+    "Discarded after UMI extraction"
+  )
+)
+
+kable(umi_details, caption = "UMI Processing Strategy")
+```
+
+## Quality Filtering Parameters
+
+```{r qc-params, echo=FALSE, eval=TRUE}
+qc_params <- data.frame(
+  Parameter = c(
+    "PolyA Trimming",
+    "Minimum Length",
+    "Quality Threshold",
+    "Expected Retention",
+    "Previous Length Filter",
+    "Reason for Change"
+  ),
+  Value = c(
+    "fastp --trim_poly_x",
+    "30 bp",
+    "Default fastp settings",
+    "70-80% of raw reads",
+    "60 bp (deprecated)",
+    "Avoid over-filtering of valid 3' QuantSeq reads"
+  )
+)
+
+kable(qc_params, caption = "Quality Control Parameters")
+```
+
+## Alignment and Quantification
+
+- **Aligner**: STAR (2-pass mode)
+- **Reference**: Arabidopsis TAIR10 with transposable element annotation
+- **Deduplication**: `umi_tools dedup` on genome BAM, then filter transcriptome BAM
+- **Quantification**: RSEM with forward-strand specification (`--forward-prob 1`)
+- **Strandedness**: Forward-stranded (matches 3' QuantSeq FWD protocol)
+
+## Computational Resources
+
+- **SLURM Account**: `gminbrg`
+- **Default Partition**: `c`
+- **Memory Allocation**:
+  - Standard jobs: 8 GB
+  - UMI trimming: 12 GB
+  - STAR alignment: 50 GB
+  - UMI deduplication: 20 GB
+  - RSEM quantification: 32 GB
+
+---
+
+# Directory Structure
 
 ```bash
-# 1. Dry run to validate workflow
-snakemake -n
-
-# 2. Execute on SLURM cluster
-snakemake --profile slurm --jobs 50
-
-# 3. Check trimming results
-bash scripts/check_trimming_qc.sh
+snakemake/
+├── Snakefile                      # Main workflow orchestrator
+├── config.yaml                    # Pipeline configuration
+├── README.Rmd                     # This document
+├── rules/                         # Modular Snakemake rules
+│   ├── 00_preprocessing.smk       # Archive extraction
+│   ├── 01_trimming.smk            # UMI extraction and trimming
+│   ├── 02_qc.smk                  # Quality control
+│   ├── 03_alignment.smk           # STAR alignment
+│   ├── 04_deduplication.smk       # UMI-based deduplication
+│   └── 05_quantification.smk      # RSEM quantification
+├── scripts/
+│   └── build_sample_sheet.py      # Generate sample metadata
+└── snakemake_run/                 # Output directory (created on run)
+    ├── extraction/
+    ├── umi_trimmed/
+    ├── qc/
+    ├── aligned/
+    ├── dedup/
+    ├── quantification/
+    └── logs/
 ```
 
 ---
 
-## Workflow Stages
+# Configuration
 
-1. **Preprocessing** - Extract 30 tar.gz archives to scratch; generate sample sheet with unique_id (format: `294339_S26`)
-2. **UMI Extraction** - Extract 12bp UMI from R2, embed in R1 header as `@...:UMI_TTTGTGTGAAAG`
-3. **3' Trimming** - fastp with `--trim_poly_x --cut_right` for polyA/polyX removal specific to 3' sequencing
+The `config.yaml` file contains all pipeline parameters. Key settings are described below:
+
+## Essential Parameters
+
+```{r config-table, echo=FALSE, eval=TRUE}
+config_params <- data.frame(
+  Parameter = c(
+    "extraction_dir",
+    "outdir",
+    "sample_sheet",
+    "umi_len",
+    "length_required",
+    "adapter_fasta",
+    "star_index",
+    "rsem_index"
+  ),
+  Description = c(
+    "Directory containing raw .tar.gz sequencing archives",
+    "Output directory for all pipeline results",
+    "TSV file with sample metadata (sample_id, fastq_r1, fastq_r2)",
+    "UMI length in base pairs",
+    "Minimum read length after trimming (bp)",
+    "Path to adapter sequences for trimming",
+    "STAR genome index directory",
+    "RSEM reference transcriptome index prefix"
+  ),
+  Default = c(
+    "/scratch-cbe/users/<user>/extraction",
+    "./snakemake_run",
+    "./samples_uniq.tsv",
+    "12",
+    "30",
+    "/path/to/adapters.fa",
+    "/path/to/star_index",
+    "/path/to/rsem_reference"
+  )
+)
+
+kable(config_params, caption = "Configuration Parameters")
+```
+
+## Example config.yaml
+
+```yaml
+# Input/Output
+extraction_dir: "/scratch-cbe/users/<user>/extraction"
+outdir: "./snakemake_run"
+sample_sheet: "./samples_uniq.tsv"
+
+# UMI Parameters
+umi_len: 12
+umi_loc: "read2"
+
+# Trimming Parameters
+length_required: 30      # Minimum read length (bp)
+adapter_fasta: "/path/to/adapters.fa"
+
+# Reference Genomes
+star_index: "/path/to/star_index"
+rsem_index: "/path/to/rsem_reference"
+
+# RSEM Parameters
+forward_prob: 1          # Forward-stranded library
+```
 
 ---
 
-## Key Outputs
+# Running the Pipeline
 
-| Output | Location | Description |
-|--------|----------|-------------|
-| Sample metadata | `sample_sheet.csv` | unique_id, sample_name, file paths |
-| UMI-trimmed FASTQs | `/scratch-cbe/.../umi_trimmed/{unique_id}.fastq.gz` | ~2086 samples with UMI in header |
-| QC reports | `fastp_reports/` | Per-sample trimming statistics |
+## 1. Initial Setup
+
+Navigate to the pipeline directory and start a persistent session:
+
+```bash
+cd /groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake
+tmux new -s snakemake
+```
+
+**Why tmux?** Long-running pipelines benefit from persistent sessions that survive disconnections.
+
+## 2. Environment Activation
+
+Ensure your Snakemake environment is activated:
+
+```bash
+conda activate snakemake
+# or
+module load snakemake
+```
+
+## 3. Dry Run (Validation)
+
+Test the workflow without executing jobs:
+
+```bash
+snakemake -n
+```
+
+This command:
+- Validates the Snakefile syntax
+- Checks for missing input files
+- Displays the execution plan
+- Estimates the number of jobs
+
+## 4. Full Pipeline Execution
+
+Launch the complete pipeline with SLURM cluster execution:
+
+```bash
+snakemake \
+  --jobs 100 \
+  --executor slurm \
+  --default-resources \
+    slurm_account=gminbrg \
+    slurm_partition=c \
+    mem_mb=8000 \
+  --set-resources \
+    umi_trim:mem_mb=12000 \
+    star_align:mem_mb=50000 \
+    umi_tools_dedup:mem_mb=20000 \
+    rsem_quantify:mem_mb=32000 \
+  --keep-going \
+  --latency-wait 60 \
+  --retries 2
+```
+
+### Command Breakdown
+
+```{r command-breakdown, echo=FALSE, eval=TRUE}
+cmd_breakdown <- data.frame(
+  Flag = c(
+    "--jobs 100",
+    "--executor slurm",
+    "--default-resources",
+    "  slurm_account=gminbrg",
+    "  slurm_partition=c",
+    "  mem_mb=8000",
+    "--set-resources",
+    "  umi_trim:mem_mb=12000",
+    "  star_align:mem_mb=50000",
+    "  umi_tools_dedup:mem_mb=20000",
+    "  rsem_quantify:mem_mb=32000",
+    "--keep-going",
+    "--latency-wait 60",
+    "--retries 2"
+  ),
+  Purpose = c(
+    "Allow up to 100 simultaneous SLURM jobs",
+    "Use SLURM workload manager",
+    "Set default resource requirements",
+    "Charge jobs to gminbrg account",
+    "Submit to 'c' partition",
+    "Allocate 8 GB RAM by default",
+    "Override resources for specific rules",
+    "12 GB for UMI trimming",
+    "50 GB for STAR alignment (genome index loading)",
+    "20 GB for UMI deduplication",
+    "32 GB for RSEM quantification",
+    "Continue pipeline despite individual job failures",
+    "Wait 60s for filesystem sync",
+    "Retry failed jobs up to 2 times"
+  )
+)
+
+kable(cmd_breakdown, caption = "Snakemake Command Options")
+```
+
+## 5. Monitoring Progress
+
+### View Overall Status
+
+```bash
+snakemake --summary
+```
+
+### Check Specific Rule
+
+```bash
+snakemake --list-rules
+snakemake -n <rule_name>
+```
+
+### Monitor SLURM Queue
+
+```bash
+squeue -u $USER
+watch -n 10 'squeue -u $USER | wc -l'
+```
+
+---
+
+# Pipeline Steps
+
+## Step 1: Extraction
+
+**Rule**: `extract_archives`  
+**Input**: `.tar.gz` archives from sequencing facility  
+**Output**: Extracted FASTQ files in scratch storage
+
+### What Happens
+
+1. Locates all `.tar.gz` files in extraction directory
+2. Decompresses archives to scratch storage (fast I/O)
+3. Creates `.keep` marker files to prevent automatic deletion
+4. Preserves directory structure from archive
+
+### Why Scratch Storage?
+
+Scratch provides high-speed temporary storage for intermediate files that don't require long-term retention.
+
+```bash
+# Example extraction
+tar -xzf run01.tar.gz -C /scratch-cbe/users/$USER/extraction/
+touch /scratch-cbe/users/$USER/extraction/.keep
+```
+
+---
+
+## Step 2: Sample Sheet Generation
+
+**Script**: `scripts/build_sample_sheet.py`  
+**Input**: Extracted FASTQ files  
+**Output**: `samples_uniq.tsv`
+
+### What Happens
+
+1. Recursively scans extraction directory
+2. Identifies paired-end FASTQ files (R1/R2)
+3. Extracts unique sample identifiers
+4. Creates tab-separated sample sheet with columns:
+   - `sample_id`: Unique sample identifier
+   - `fastq_r1`: Path to Read 1
+   - `fastq_r2`: Path to Read 2
+
+### Sample Sheet Format
+
+```
+sample_id       fastq_r1        fastq_r2
+sample001       /path/to/sample001_R1.fastq.gz /path/to/sample001_R2.fastq.gz
+sample002       /path/to/sample002_R1.fastq.gz /path/to/sample002_R2.fastq.gz
+```
+
+---
+
+## Step 3: UMI Trimming with fastp
+
+**Rule**: `umi_trim`  
+**Tool**: fastp v0.23+  
+**Memory**: 12 GB  
+**Input**: Raw paired-end FASTQ files  
+**Output**: UMI-trimmed single-end FASTQ (R1 only)
+
+### What Happens
+
+1. **UMI Extraction**: Extracts 12bp from the 5' end of R2
+2. **Header Embedding**: Appends UMI sequence to R1 FASTQ header
+3. **R2 Discard**: Discards R2 after UMI extraction (not needed for 3' QuantSeq)
+4. **PolyA Trimming**: Removes polyA/polyT tails with `--trim_poly_x`
+5. **Quality Trimming**: Removes low-quality bases
+6. **Adapter Removal**: Trims adapters if detected
+7. **Length Filtering**: Discards reads < 30bp
+
+### Expected Output
+
+- **Input**: ~50M read pairs per sample
+- **Output**: ~35-40M single-end reads (70-80% retention)
+- **Discarded**: Reads < 30bp, low quality, or adapter-contaminated
+
+### Command Template
+
+```bash
+fastp \
+  --in1 {input.r1} \
+  --in2 {input.r2} \
+  --out1 {output.trimmed} \
+  --umi \
+  --umi_loc read2 \
+  --umi_len 12 \
+  --trim_poly_x \
+  --length_required 30 \
+  --adapter_fasta {params.adapters} \
+  --thread 4 \
+  --json {output.json} \
+  --html {output.html}
+```
+
+### UMI Header Format
+
+After processing, R1 headers contain the UMI:
+
+```
+@NB501234:123:HXXXX:1:11101:1234:1234:AGCTTAGCTTAG 1:N:0:ATCACG
+```
+
+The 12bp UMI (`AGCTTAGCTTAG`) is appended after the coordinates.
+
+---
+
+## Step 4: Quality Control
+
+**Rules**: `fastqc`, `multiqc`  
+**Tools**: FastQC, MultiQC
+
+### FastQC (Per-Sample)
+
+Generates quality reports for each trimmed FASTQ:
+
+- Base quality scores
+- Per-base sequence content
+- GC content distribution
+- Sequence length distribution
+- Adapter content (should be minimal after trimming)
+- Duplicate levels
+
+### MultiQC (Aggregated)
+
+Combines all FastQC reports into a single interactive HTML report:
+
+```bash
+multiqc snakemake_run/qc/fastqc/ -o snakemake_run/qc/multiqc/
+```
+
+**Key Metrics to Check**:
+
+- Mean quality score: Should be >30
+- Duplication rate: Expected to be high (will deduplicate with UMI)
+- Read length distribution: Should peak around expected insert size
+- Retention rate: 70-80% is expected
+
+---
+
+## Step 5: STAR Alignment
+
+**Rule**: `star_align`  
+**Tool**: STAR v2.7+  
+**Memory**: 50 GB (for genome index loading)  
+**Input**: UMI-trimmed FASTQ  
+**Output**: 
+  - Genome BAM (coordinate-sorted)
+  - Transcriptome BAM (for RSEM)
+  - Alignment statistics
+
+### What Happens
+
+1. **Index Loading**: Loads STAR genome index into shared memory (50GB)
+2. **Alignment**: Aligns reads to reference genome with TE annotation
+3. **Multi-Mapping**: Handles reads mapping to multiple locations (important for TEs)
+4. **Output BAMs**: 
+   - `Aligned.sortedByCoord.out.bam` - for deduplication
+   - `Aligned.toTranscriptome.out.bam` - for RSEM
+
+### Command Template
+
+```bash
+STAR \
+  --runThreadN 8 \
+  --genomeDir {params.star_index} \
+  --readFilesIn {input.fastq} \
+  --readFilesCommand zcat \
+  --outFileNamePrefix {params.prefix} \
+  --outSAMtype BAM SortedByCoordinate \
+  --quantMode TranscriptomeSAM \
+  --outFilterMultimapNmax 100 \
+  --winAnchorMultimapNmax 100 \
+  --outSAMattributes NH HI AS nM NM \
+  --limitBAMsortRAM 40000000000
+```
+
+### Expected Mapping Rates
+
+```{r mapping-rates, echo=FALSE, eval=TRUE}
+mapping_rates <- data.frame(
+  Category = c(
+    "Uniquely Mapped",
+    "Multi-Mapped",
+    "Unmapped: Too Short",
+    "Unmapped: Other"
+  ),
+  Expected = c(
+    "60-75%",
+    "10-20%",
+    "5-10%",
+    "5-10%"
+  ),
+  Notes = c(
+    "Single genomic location",
+    "Multiple locations (TEs, gene families)",
+    "Reads < minimum alignment length",
+    "Low quality, no alignment found"
+  )
+)
+
+kable(mapping_rates, caption = "Expected STAR Alignment Rates")
+```
+
+---
+
+## Step 6: UMI Deduplication
+
+**Rule**: `umi_tools_dedup`  
+**Tool**: UMI-tools v1.1+  
+**Memory**: 20 GB  
+**Input**: Coordinate-sorted genome BAM  
+**Output**: Deduplicated genome BAM + read IDs
+
+### What Happens
+
+1. **Index BAM**: Creates BAI index for genome BAM
+2. **Group by UMI**: Groups reads by genomic position and UMI
+3. **Collapse Duplicates**: Keeps one representative read per UMI group
+4. **Output Read IDs**: Saves list of retained read IDs
+5. **Filter Transcriptome BAM**: Applies deduplication to transcriptome BAM using read IDs
+
+### Two-Step Process
+
+#### Step 6a: Deduplicate Genome BAM
+
+```bash
+umi_tools dedup \
+  --stdin={input.bam} \
+  --stdout={output.bam} \
+  --output-stats={params.stats} \
+  --log={log} \
+  --extract-umi-method=read_id
+```
+
+#### Step 6b: Filter Transcriptome BAM
+
+```bash
+# Extract deduplicated read IDs
+samtools view {input.dedup_bam} | cut -f1 | sort -u > {output.read_ids}
+
+# Filter transcriptome BAM
+samtools view -h {input.tx_bam} | \
+  grep -F -f {input.read_ids} | \
+  samtools view -b > {output.filtered_tx_bam}
+```
+
+### Deduplication Strategy
+
+- **Method**: Directional adjacency (handles UMI sequencing errors)
+- **Grouping**: By alignment position and UMI sequence
+- **Expected Reduction**: 20-40% of aligned reads removed
+
+### Why Two BAMs?
+
+- **Genome BAM**: For visualization, peak calling, structural variant detection
+- **Transcriptome BAM**: For RSEM quantification (already mapped to transcriptome coordinates)
+
+---
+
+## Step 7: RSEM Quantification
+
+**Rule**: `rsem_quantify`  
+**Tool**: RSEM v1.3+  
+**Memory**: 32 GB  
+**Input**: Deduplicated transcriptome BAM  
+**Output**: Gene and isoform expression estimates
+
+### What Happens
+
+1. **Parse Transcriptome BAM**: Reads alignments in transcriptome coordinates
+2. **Estimate Abundances**: Uses expectation-maximization for multi-mapping reads
+3. **Calculate TPM**: Transcripts Per Million normalization
+4. **Output Tables**: 
+   - `{sample}.genes.results` - Gene-level counts
+   - `{sample}.isoforms.results` - Transcript-level counts
+
+### Command Template
+
+```bash
+rsem-calculate-expression \
+  --bam \
+  --no-bam-output \
+  --forward-prob 1 \
+  --num-threads 8 \
+  --paired-end {input.bam} \
+  {params.rsem_index} \
+  {params.output_prefix}
+```
+
+### Key Parameters
+
+```{r rsem-params, echo=FALSE, eval=TRUE}
+rsem_params <- data.frame(
+  Parameter = c(
+    "--bam",
+    "--no-bam-output",
+    "--forward-prob 1",
+    "--num-threads",
+    "--paired-end"
+  ),
+  Description = c(
+    "Input is BAM format (not FASTQ)",
+    "Don't output genomic BAM (save space)",
+    "Forward-stranded library (3' QuantSeq FWD)",
+    "Number of parallel threads",
+    "Original data was paired-end"
+  ),
+  Rationale = c(
+    "Using STAR transcriptome alignments",
+    "Already have genome BAM from STAR",
+    "Matches library prep protocol",
+    "Speed up quantification",
+    "Required for proper fragment length modeling"
+  )
+)
+
+kable(rsem_params, caption = "RSEM Parameter Justification")
+```
+
+### Output Files
+
+Each sample generates:
+
+```
+{sample}.genes.results
+{sample}.isoforms.results
+{sample}.stat/
+  └── {sample}.cnt
+  └── {sample}.model
+  └── {sample}.theta
+```
+
+### Output Columns
+
+**genes.results**:
+
+- `gene_id`: Gene identifier
+- `transcript_id(s)`: Associated transcripts
+- `length`: Effective gene length
+- `effective_length`: Length adjusted for fragment length distribution
+- `expected_count`: Estimated number of fragments
+- `TPM`: Transcripts Per Million
+- `FPKM`: Fragments Per Kilobase Million
+
+---
+
+# Expected Outputs
+
+The pipeline generates a structured output directory:
+
+```
+snakemake_run/
+├── extraction/
+│   └── <run_id>/
+│       └── <sample_id>_R{1,2}.fastq.gz
+│
+├── umi_trimmed/
+│   ├── <sample_id>.trimmed.fastq.gz
+│   ├── <sample_id>.fastp.json
+│   └── <sample_id>.fastp.html
+│
+├── qc/
+│   ├── fastqc/
+│   │   ├── <sample_id>_fastqc.html
+│   │   └── <sample_id>_fastqc.zip
+│   └── multiqc/
+│       └── multiqc_report.html
+│
+├── aligned/
+│   ├── <sample_id>.Aligned.sortedByCoord.out.bam
+│   ├── <sample_id>.Aligned.sortedByCoord.out.bam.bai
+│   ├── <sample_id>.Aligned.toTranscriptome.out.bam
+│   ├── <sample_id>.Log.final.out
+│   └── <sample_id>.SJ.out.tab
+│
+├── dedup/
+│   ├── <sample_id>.dedup.bam
+│   ├── <sample_id>.dedup.bam.bai
+│   ├── <sample_id>.dedup_stats.txt
+│   ├── <sample_id>.filtered_transcriptome.bam
+│   └── <sample_id>.read_ids.txt
+│
+├── quantification/
+│   ├── <sample_id>.genes.results
+│   ├── <sample_id>.isoforms.results
+│   └── <sample_id>.stat/
+│
+└── logs/
+    ├── extraction/
+    ├── umi_trim/
+    ├── star_align/
+    ├── umi_dedup/
+    └── rsem_quantify/
+```
+
+## File Descriptions
+
+```{r output-descriptions, echo=FALSE, eval=TRUE}
+file_desc <- data.frame(
+  File = c(
+    "*.trimmed.fastq.gz",
+    "*.fastp.json",
+    "*.Aligned.sortedByCoord.out.bam",
+    "*.Aligned.toTranscriptome.out.bam",
+    "*.Log.final.out",
+    "*.dedup.bam",
+    "*.filtered_transcriptome.bam",
+    "*.genes.results",
+    "*.isoforms.results",
+    "multiqc_report.html"
+  ),
+  Description = c(
+    "UMI-trimmed, polyA-trimmed, quality-filtered reads",
+    "Detailed trimming statistics in JSON format",
+    "Genome-aligned BAM (coordinate-sorted)",
+    "Transcriptome-aligned BAM (for RSEM)",
+    "STAR alignment summary statistics",
+    "Deduplicated genome BAM",
+    "Deduplicated transcriptome BAM",
+    "Gene-level expression estimates (TPM, counts)",
+    "Isoform-level expression estimates",
+    "Aggregated QC report across all samples"
+  ),
+  Purpose = c(
+    "Alignment input",
+    "QC, troubleshooting",
+    "Deduplication, visualization",
+    "Quantification input",
+    "Mapping rate QC",
+    "Final genome alignments",
+    "RSEM input",
+    "Differential expression analysis",
+    "Isoform-level analysis",
+    "Overall pipeline QC"
+  )
+)
+
+kable(file_desc, caption = "Key Output Files")
+```
+
+---
+
+# Troubleshooting
+
+## Common Issues and Solutions
+
+### Issue 1: Low Read Retention (<50%)
+
+**Symptoms**: 
+- fastp reports show >50% reads discarded
+- Very short read length distributions
+
+**Diagnosis**:
+```bash
+# Check fastp JSON for filtering stats
+grep -A 5 "filtering_result" snakemake_run/umi_trimmed/*.json
+```
+
+**Solution**:
+- Check `length_required` in `config.yaml` - should be **30**, not 60
+- 3' QuantSeq reads are naturally shorter than standard RNA-seq
+- Changed from 60bp to 30bp to avoid over-filtering
+
+**Prevention**: 70-80% retention is expected and healthy
+
+---
+
+### Issue 2: SLURM Account Error
+
+**Symptoms**:
+```
+sbatch: error: Batch job submission failed: Invalid account or account/partition combination
+```
+
+**Solution**:
+```bash
+# Ensure using correct account
+snakemake ... --default-resources slurm_account=gminbrg
+```
+
+**Verification**:
+```bash
+# Check available accounts
+sacctmgr show user $USER withassoc format=account,cluster
+```
+
+---
+
+### Issue 3: Missing or Incomplete Files
+
+**Symptoms**:
+- Snakemake complains about missing input files
+- Jobs skip without explanation
+
+**Diagnosis**:
+```bash
+# Check for incomplete jobs
+snakemake --rerun-incomplete -n
+```
+
+**Solution**:
+```bash
+# Rerun incomplete jobs
+snakemake --rerun-incomplete
+
+# Force rerun specific samples
+snakemake --forcerun <rule_name>
+```
+
+---
+
+### Issue 4: Memory Errors (SLURM OOM)
+
+**Symptoms**:
+```
+slurmstepd: error: Detected 1 oom-kill event(s) in step <jobid>
+```
+
+**Affected Rules**: Usually `star_align` or `rsem_quantify`
+
+**Solution**:
+```bash
+# Increase memory for specific rules
+snakemake ... \
+  --set-resources \
+    star_align:mem_mb=64000 \
+    rsem_quantify:mem_mb=48000
+```
+
+---
+
+### Issue 5: Filesystem Latency Issues
+
+**Symptoms**:
+- "Missing input file" errors immediately after job completion
+- Files exist but Snakemake doesn't see them
+
+**Solution**: Increase latency wait time
+```bash
+snakemake --latency-wait 120  # Wait 2 minutes for filesystem sync
+```
+
+---
+
+### Issue 6: Sample Sheet Not Found
+
+**Symptoms**:
+```
+FileNotFoundError: samples_uniq.tsv
+```
+
+**Solution**:
+```bash
+# Run sample sheet generation
+python scripts/build_sample_sheet.py \
+  --extraction-dir /scratch-cbe/users/$USER/extraction \
+  --output samples_uniq.tsv
+
+# Verify format
+head samples_uniq.tsv
+```
+
+---
+
+### Issue 7: UMI Deduplication Removes Too Many Reads
+
+**Symptoms**:
+- >60% of reads removed during deduplication
+- Suspiciously low final counts
+
+**Diagnosis**:
+```bash
+# Check deduplication stats
+cat snakemake_run/dedup/*.dedup_stats.txt
+```
+
+**Possible Causes**:
+1. **True PCR duplicates**: Expected in high-depth libraries
+2. **Low complexity library**: Too few unique molecules
+3. **UMI extraction failure**: All reads have same UMI
+
+**Verification**:
+```bash
+# Check UMI diversity in FASTQ headers
+zcat snakemake_run/umi_trimmed/sample001.trimmed.fastq.gz | \
+  grep "^@" | \
+  sed 's/.*://' | \
+  sort | uniq -c | sort -rn | head -20
+```
+
+**Expected**: Wide distribution of UMI sequences  
+**Problem**: One UMI dominates (e.g., `NNNNNNNNNNNN` or same sequence repeated)
+
+---
+
+### Issue 8: STAR Index Incompatibility
+
+**Symptoms**:
+```
+FATAL ERROR: Genome version is incompatible with current STAR version
+```
+
+**Solution**: Rebuild STAR index with matching STAR version
+```bash
+STAR --runMode genomeGenerate \
+  --genomeDir /path/to/new_index \
+  --genomeFastaFiles genome.fa \
+  --sjdbGTFfile annotation.gtf \
+  --sjdbOverhang 99 \
+  --runThreadN 16
+```
+
+---
+
+### Issue 9: Corrupted BAM Files
+
+**Symptoms**:
+- "truncated file" errors
+- "EOF marker is absent"
+
+**Diagnosis**:
+```bash
+# Validate BAM
+samtools quickcheck snakemake_run/aligned/*.bam
+echo $?  # 0 = OK, non-zero = corrupted
+```
+
+**Solution**:
+```bash
+# Remove corrupted BAM and rerun
+rm snakemake_run/aligned/<sample>.bam
+snakemake --rerun-incomplete
+```
+
+---
+
+## Debugging Workflow
+
+### 1. Check Snakemake DAG
+
+```bash
+snakemake --dag | dot -Tpdf > dag.pdf
+```
+
+### 2. Validate Configuration
+
+```bash
+snakemake --configfile config.yaml --config
+```
+
+### 3. Test Single Sample
+
+```bash
+snakemake snakemake_run/quantification/sample001.genes.results -n
+```
+
+### 4. Examine Logs
+
+```bash
+# View recent errors
+tail -n 50 snakemake_run/logs/*/*.e
+
+# Search for specific error
+grep -r "error" snakemake_run/logs/
+```
+
+### 5. Resource Profiling
+
+```bash
+# Check actual resource usage
+sacct -j <jobid> --format=JobID,JobName,MaxRSS,Elapsed
+```
+
+---
+
+# Session Info
+
+This document was generated with the following R environment:
+
+```{r session-info, echo=TRUE, eval=TRUE}
+sessionInfo()
+```
+
+## Software Versions
+
+```{r software-versions, echo=FALSE, eval=TRUE}
+software <- data.frame(
+  Tool = c(
+    "Snakemake",
+    "fastp",
+    "FastQC",
+    "MultiQC",
+    "STAR",
+    "UMI-tools",
+    "RSEM",
+    "samtools"
+  ),
+  Version = c(
+    "7.32+",
+    "0.23+",
+    "0.11+",
+    "1.14+",
+    "2.7+",
+    "1.1+",
+    "1.3+",
+    "1.17+"
+  ),
+  Purpose = c(
+    "Workflow management",
+    "UMI extraction and trimming",
+    "Quality control",
+    "Report aggregation",
+    "Read alignment",
+    "UMI-based deduplication",
+    "Expression quantification",
+    "BAM manipulation"
+  )
+)
+
+kable(software, caption = "Required Software and Versions")
+```
+
+---
+
+# Additional Resources
+
+## Documentation Links
+
+- **Snakemake**: https://snakemake.readthedocs.io/
+- **fastp**: https://github.com/OpenGene/fastp
+- **STAR**: https://github.com/alexdobin/STAR
+- **UMI-tools**: https://umi-tools.readthedocs.io/
+- **RSEM**: https://github.com/deweylab/RSEM
+
+## Internal Resources
+
+- **Project Directory**: `/groups/nordborg/projects/ddm1_resilencing/`
+- **Reference Genomes**: `/groups/nordborg/ref_genomes/`
+- **Lab Wiki**: [Internal lab documentation]
+
+## Contact
+
+For questions or issues with this pipeline, contact:
+
+- **Bioinformatics Support**: [Lab contact]
+- **PI**: Magnus Nordborg
+
+---
+
+**Last Updated**: `r Sys.Date()`  
+**Pipeline Version**: 1.0  
+**Project**: DDM1 Resilencing - Transcriptome Analysis

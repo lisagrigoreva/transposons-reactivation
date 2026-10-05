@@ -1,10 +1,13 @@
+wildcard_constraints:
+    sample = r"[^./]+"
+
 # Base directories
 workdir: "/groups/nordborg/projects/ddm1_resilencing"
 datadir: "/groups/nordborg/projects/ddm1_resilencing/01_data/96_plates_tm3_rnaseq"
 
 # Processing on scratch
 outdir: "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run"
-extraction_dir: "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/01_data"
+extraction_dir: "/groups/nordborg/projects/ddm1_resilencing/01_data/96_plates_tm3_rnaseq_extracted"
 
 # Sample sheet (in project dir)
 sample_sheet: "samples_uniq.tsv"
@@ -18,3 +21,12 @@ length_required: 60
 cut_quality: 20
 qualified_quality_phred: 20
 unqualified_percent_limit: 20
+
+# Reference genome indices 
+star_index: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/star_indixies_tari10_te_flipped"
+rsem_index: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/rsem_index_with_opposite_orientation_te_col0/TAIR10_chr_all"
+
+# STAR parameters (ADD THESE)
+star_threads: 30
+star_intron_max: 1
+star_intron_min: 2
