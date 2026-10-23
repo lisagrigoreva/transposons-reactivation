@@ -13,3 +13,13 @@ core.*
 *.RData
 *.bam
 *.RData
+
+# Ignore log files and snakemake logs
+*.log
+.snakemake/
+.snakemake/log/
+**/.snakemake/log/
+*.log
+.snakemake/
+*.log
+.snakemake/

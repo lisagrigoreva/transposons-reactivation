@@ -1,0 +1,12 @@
+# Sample and output paths
+sample_sheet: "/groups/nordborg/projects/ddm1_resilencing/02_scripts/transposons-reactivation/01_transcriptome_analysis/snakemake/samples_uniq.tsv"
+outdir: "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run"
+project_name: "ibdpaint"
+chromosomes: [Chr1, Chr2, Chr3, Chr4, Chr5]
+fasta: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_chr_all.fas"
+min_MQ: 20  # Minimum mapping quality for bcftools mpileup
+parental_snp_vcf: "/groups/nordborg/projects/ddm1_resilencing/11_resources/snp_matrix_fernando/1163g.179kB.prior15.gauss4.ts99.5.BIALLELIC.heterozygous_acc_removed.missingmasked.morethan10pmissingremoved.bcftools.vcf.gz"
+# IBD painting parameters
+expected_parents: "/groups/nordborg/projects/ddm1_resilencing/03_processing/02_ibdpainting/expected_parents.txt"
+ibd_window_size: 500000
+genic_regions_bed: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ibdpainting_pipeline/TAIR10_GFF3_genes.bed"

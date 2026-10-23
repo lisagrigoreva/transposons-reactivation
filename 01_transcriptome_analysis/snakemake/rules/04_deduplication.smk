@@ -17,10 +17,11 @@ rule umi_dedup:
         sep = "_"
     log:
         os.path.join(config["outdir"], "logs", "umi_tools", "{sample}_dedup.log")
-    threads: 1
+    threads: 5
     resources:
-        mem_mb=16000,
-        time="4:00:00"
+        mem_mb=64000,
+        runtime=1440,
+        slurm_partition="m"
     shell:
         """
         ml build-env/f2021
@@ -79,7 +80,7 @@ rule filter_transcriptome_bam:
         os.path.join(config["outdir"], "logs", "filter_transcriptome", "{sample}.log")
     threads: 4
     resources:
-        mem_mb=8000,
+        mem_mb=10000,
         time="1:00:00"
     shell:
         """

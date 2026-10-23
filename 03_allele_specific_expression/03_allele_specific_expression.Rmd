@@ -279,8 +279,8 @@ tair10_annotation_expression <- read.table("/groups/nordborg/projects/ddm1_resil
 library(tidyr)
 library(tidyverse)
 
-tair <- tair10_annotation_expression[grepl("_tair10$", rownames(tair10_annotation_expression)), , drop = FALSE]
-acc <- tair10_annotation_expression[grepl("_100752(\\.[0-9]+)?$", rownames(tair10_annotation_expression)), , drop = FALSE]
+tair <- own_annotation_expression[grepl("_tair10$", rownames(own_annotation_expression)), , drop = FALSE]
+acc <- own_annotation_expression[grepl("_100752(\\.[0-9]+)?$", rownames(own_annotation_expression)), , drop = FALSE]
 
 # Strip suffixes to get matching feature IDs
 rownames(tair) <- sub("_tair10$", "", rownames(tair))
@@ -333,7 +333,7 @@ acc_long <- acc %>%
   )
 
 own_annotation_expression <- full_join(acc_long,tair_long)
-tair10_annotation_expression <- full_join(acc_long,tair_long)
+#tair10_annotation_expression <- full_join(acc_long,tair_long)
 ```
 
 ```{r}
@@ -615,7 +615,7 @@ dt_combined <- rbindlist(list(dt_long_own_annotation, dt_long_tair10), use.names
 
 # Boxplot: expression by feature_type, colored by annotation source,
 # faceted by genotype (and optionally by allele_genome)
-dt_combined <-dt_combined[dt_combined$feature_type=="TE" & dt_combined$genotype=="F1_ddm1",]
+dt_combined <-dt_combined[dt_combined$feature_type=="TE" & dt_combined$genotype=="F1_Col",]
 ggplot(dt_combined, aes(x = annotation, y = log2(expression+1), fill = allele_genome)) +
   geom_boxplot(outlier.size = 0.5, position = position_dodge(width = 0.8)) +
   labs(
@@ -628,9 +628,94 @@ ggplot(dt_combined, aes(x = annotation, y = log2(expression+1), fill = allele_ge
   theme(strip.text = element_text(face = "bold"))
 ```
 ```{r}
+## Map to the TE locations in tair10. Is there a copy number variation 
+te_accession_to_tair10_liftover <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/accesssion_te_to_tair10TE_6909_to_100752.gff")
+
+te_annotation_accession <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/accesssion_te_to_tair10TE_6909_to_100752.gff")
+```
+
+```{r}
+##How many of the TEs expressed on the accession background are unique to accession? 
+library(data.table)
+setDT(te_accession_to_tair10_liftover)
+
+te_accession_to_tair10_liftover[, te_name := sub('.*transcript_id "([^"]+)".*', "\\1", V9)]
+te_accession_to_tair10_liftover[, te_name := sub("\\.1$", "", te_name)]
+te_accession_to_tair10_liftover$te_name <- gsub("_.*", "", te_accession_to_tair10_liftover$te_name)
+head(te_accession_to_tair10_liftover)
+
+dt_combined <-dt_combined[dt_combined$annotation=="own" & dt_combined$allele_genome!="TAIR10",]
+
+summary(unique(dt_combined$feature_id) %in% unique(te_accession_to_tair10_liftover$te_name))
+## Select false expression 
+missing_features <- unique(dt_combined$feature_id)[!unique(dt_combined$feature_id) %in% unique(te_accession_to_tair10_liftover$te_name)]
+dt_combined_missing <- dt_combined[!feature_id %in% unique(te_accession_to_tair10_liftover$te_name)]
+dt_combined_missing
+
 ```
 
 
+```{r}
+## Get CNV of these TEs
+head(dt_combined_missing)
+initial_annotation_table <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/te_name_class.tsv", header=F)
+head(initial_annotation_table)
+initial_annotation_table$V1 <- gsub("_.*", "", initial_annotation_table$V1)
+dt_combined_missing_check_class <- left_join(dt_combined_missing,initial_annotation_table, by=c("feature_id"="V1"))
+
+library(data.table)
+library(ggplot2)
+
+class_counts <- unique(
+  dt_combined_missing_check_class[, .(feature_id, V3)]
+)[, .(n_TE = .N), by = V3]
+
+ggplot(class_counts, aes(x = reorder(V3, n_TE), y = n_TE)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    x = "TE class",
+    y = "Number of unique TEs",
+    title = "TE counts by class"
+  ) +
+  theme_bw(base_size = 13)
+```
+
+```{r}
+## Get place where TEs are expressed
+te_annotation <- fread("/groups/nordborg/projects/ddm1_resilencing/03_processing/007_allele_specific_expression/test_run_as/100752.TE_merged.renamed.withTEid.forR.gff3", header=F)
+te_annotation$class <- sub(".*class=([^;]+);.*", "\\1", te_annotation$V6)
+te_annotation$V3<- gsub("_100752", "", te_annotation$V3)
+
+dt_combined_missing_check_class_with_coord <- inner_join(dt_combined_missing_check_class,te_annotation, by=c("feature_id"="V3"))
+
+ggplot(dt_combined_missing_check_class_with_coord, aes(V4, V1, color = log2(expression + 1))) +
+  geom_point() +
+  xlab("Mbp") +
+  ylab("chromosome")
+
+ggplot(dt_combined_missing_check_class_with_coord, aes(V4, V1, color = class)) +
+  geom_point() +
+  xlab("Mbp") +
+  ylab("chromosome")
+
+## Calculate CNV in the file 
+# Count copy number per class
+cnv_counts <- te_annotation %>%
+  group_by(class) %>%
+  dplyr::summarise(CNV = n())
+
+# Merge with expression data
+cnv_expression <- dt_combined_missing_check_class_with_coord %>%
+  filter(class %in% te_annotation$class) %>%
+  left_join(cnv_counts, by = "class")
+
+# Plot CNV vs expression
+ggplot(cnv_expression, aes(x = CNV, y = log2(expression + 1), color = class)) +
+  geom_point() +
+  xlab("CNV (copy number)") +
+  ylab("Expression (log2)")
+```
 
 
 

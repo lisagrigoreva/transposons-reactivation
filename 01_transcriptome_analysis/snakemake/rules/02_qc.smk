@@ -58,8 +58,8 @@ rule multiqc_trimming:
         time="2:00:00"
     shell:
         """
-        ml build-env/f2022
-        ml multiqc/1.14-foss-2021b
+        ml build-env/f2021
+        ml multiqc/1.11-foss-2020b-python-3.8.6
 
         mkdir -p $(dirname {output})
 

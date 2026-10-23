@@ -1,0 +1,99 @@
+# Snakefile for IBDpaint pipeline
+# Reads dedup BAMs from RNA-seq pipeline, calls SNPs, converts to HDF5, runs ibdpainting
+
+import os
+import pandas as pd
+
+# ========================================================================
+# Configuration
+# ========================================================================
+configfile: "config.yaml"
+
+# ========================================================================
+# Helper functions
+# ========================================================================
+def read_samples(sheet_path, dedup_dir=None):
+    """Read sample sheet and return list of unique_ids.
+    If dedup_dir is provided, filter to only samples whose dedup BAM
+    ({dedup_dir}/{uid}.dedup.bam) exists on disk, and print a warning
+    with the count of skipped samples
+    """
+    df = pd.read_csv(sheet_path, sep="\t")
+    if "unique_id" not in df.columns:
+        raise ValueError(f"sample_sheet must have a 'unique_id' column. Found: {df.columns.tolist()}")
+    uids = df["unique_id"].dropna().astype(str).tolist()
+
+    if dedup_dir:
+        before = len(uids)
+        uids = [u for u in uids if os.path.isfile(os.path.join(dedup_dir, f"{u}.dedup.bam"))]
+        skipped = before - len(uids)
+        if skipped > 0:
+            print(f"WARNING: Skipped {skipped} samples because dedup BAMs were not found in {dedup_dir}")
+
+    return uids
+
+def read_expected_parents(path):
+    """
+    Parse expected_parents.txt into {sample: 'parent1 parent2'}.
+    Format: sample_name<TAB>parent1<TAB>parent2
+    """
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                out[parts[0]] = f"{parts[1]} {parts[2]}"
+    return out
+
+# ========================================================================
+# Global variables
+# ========================================================================
+SAMPLES = read_samples(
+    config["sample_sheet"],
+    dedup_dir=os.path.join(config["outdir"], "dedup"),
+)
+CHROMOSOMES = config.get("chromosomes", ["Chr1", "Chr2", "Chr3", "Chr4", "Chr5"])
+IBDPAINT_SAMPLES = read_expected_parents(config.get("expected_parents", "expected_parents.txt"))
+
+OUT = config["outdir"]
+PROJECT = config.get("project_name", "ddm1_resilencing")
+
+# ========================================================================
+# Rule includes
+# ========================================================================
+include: "rules/01_call_snps.smk"
+include: "rules/02_merge_chromosomes.smk"
+include: "rules/03_reheader_vcf.smk"
+include: "rules/04_filter_panels.smk"
+include: "rules/05_vcf_to_hdf5.smk"
+include: "rules/06_ibdpainting.smk"
+
+# ========================================================================
+# Target rules
+# ========================================================================
+rule all:
+    input:
+        f"{OUT}/filtered/reference_panel_filtered.vcf.gz",
+        f"{OUT}/filtered/{PROJECT}_target_filtered.vcf.gz",
+        f"{OUT}/hdf5/parents_reference.h5",
+        f"{OUT}/hdf5/{PROJECT}.h5",
+        expand(f"{OUT}/ibdpainting/{{sample}}.done", sample=IBDPAINT_SAMPLES.keys())
+
+rule all_vcf:
+    input:
+        f"{OUT}/filtered/{PROJECT}_target_filtered.vcf.gz",
+        f"{OUT}/filtered/reference_panel_filtered.vcf.gz"
+
+rule all_hdf5:
+    input:
+        f"{OUT}/hdf5/parents_reference.h5",
+        f"{OUT}/hdf5/{PROJECT}.h5"
+
+rule all_ibdpainting:
+    input:
+        expand(f"{OUT}/ibdpainting/{{sample}}.done", sample=IBDPAINT_SAMPLES.keys())
