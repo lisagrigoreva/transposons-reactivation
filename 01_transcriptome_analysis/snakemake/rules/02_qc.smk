@@ -19,7 +19,7 @@ rule fastqc_trimmed:
     threads: 2
     resources:
         mem_mb=10000,
-        time="03:00:00"
+        time="05:00:00"
     shell:
         """
         ml build-env/f2022

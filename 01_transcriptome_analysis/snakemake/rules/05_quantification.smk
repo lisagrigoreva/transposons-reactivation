@@ -20,8 +20,10 @@ rule rsem_quantify:
         os.path.join(config["outdir"], "logs", "rsem", "{sample}.log")
     threads: 4
     resources:
-        mem_mb=8000,
-        time="1:00:00"
+        mem_mb = 50000,
+        runtime = 1040,
+        slurm_partition="m",
+        qos="m_long",
     shell:
         """
         ml build-env/2020

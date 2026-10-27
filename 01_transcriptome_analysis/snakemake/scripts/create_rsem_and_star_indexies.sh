@@ -36,3 +36,16 @@ $9 ~ /AT[1-5]TE[0-9]+/ {
 # 5. Combine: genes + cannonical strand TEs + non-cannonical strand TEs
 cat TAIR10_genes_only.gtf TAIR10_TE_synthetic.gtf TAIR10_TEs_OP.gtf \
   > TAIR10_TE_genes_synthetic_with_OP_direction.gtf
+
+## Create indexies 
+# STAR
+STAR --runMode genomeGenerate --runThreadN 8 \
+--genomeDir /groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/star_index \
+--genomeFastaFiles /groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_chr_all.fas \
+--genomeSAindexNbases 12 \
+--sjdbGTFfile /groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_TE_genes_synthetic_with_OP_direction.gtf \
+--sjdbOverhang 100
+
+# RSEM
+rsem-prepare-reference --gtf TAIR10_TE_genes_synthetic_with_OP_direction.gtf \
+--num-threads 4 TAIR10_chr_all.fas ./rsem_index_with_opposite_orientation_te_col0/TAIR10_chr_all

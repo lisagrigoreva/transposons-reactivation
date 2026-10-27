@@ -14,8 +14,8 @@ rule star_align:
         os.path.join(config["outdir"], "logs", "star", "{sample}.log")
     threads: 8
     resources:
-        mem_mb=16000,
-        time="1:00:00"
+        mem_mb = 60000,
+        runtime = 340
     shell:
         """
         ml build-env/f2022
@@ -63,8 +63,8 @@ rule index_bam:
         os.path.join(config["outdir"], "logs", "samtools", "{sample}_index.log")
     threads: 2
     resources:
-        mem_mb=4000,
-        time="0:30:00"
+        mem_mb = 10000,
+        runtime = 300
     shell:
         """
         ml build-env/f2022

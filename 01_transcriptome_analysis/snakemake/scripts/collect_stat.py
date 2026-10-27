@@ -1,51 +1,27 @@
 #!/usr/bin/env python3
 import sys
-import gzip
 
-ROOT = "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run"
+if len(sys.argv) != 4:
+    sys.exit("Usage: python3 collect_stat.py run_dir input.tsv output.tsv")
 
-if len(sys.argv) < 3:
-    print("Usage: python3 script.py input.tsv output.tsv")
-    sys.exit(1)
+root, input_tsv, output_tsv = sys.argv[1:]
 
-input_tsv = sys.argv[1]
-output_tsv = sys.argv[2]
+def grab(path, key):
+    """Return the values on lines starting with `key`, in order."""
+    try:
+        return [l.split(":")[-1].split("|")[-1].strip()
+                for l in open(path) if l.strip().startswith(key)]
+    except OSError:
+        return []
 
-with open(input_tsv) as f:
-    header = f.readline().strip()
-    lines = f.readlines()
+fin, fout = open(input_tsv), open(output_tsv, "w")
+fout.write(fin.readline().rstrip("\n") + "\treads_umi_extracted\treads_umi_trimmed\treads_uniquely_aligned\n")
 
-out = open(output_tsv, 'w')
-out.write(header + "\treads_umi_extracted\treads_umi_trimmed\treads_uniquely_aligned\n")
-
-for line in lines:
-    line = line.strip()
+for line in fin:
+    line = line.rstrip("\n")
     if not line:
         continue
-    
-    unique_id = line.split('\t')[0]
-    
-    # Count FASTQ reads
-    try:
-        umi_ext = str(sum(1 for _ in gzip.open(f"{ROOT}/umi_extracted/{unique_id}.fastq.gz", 'rt')) // 4)
-    except:
-        umi_ext = "NA"
-    
-    try:
-        umi_trim = str(sum(1 for _ in gzip.open(f"{ROOT}/umi_trimmed/{unique_id}.fastq.gz", 'rt')) // 4)
-    except:
-        umi_trim = "NA"
-    
-    # Parse STAR log
-    star = "NA"
-    try:
-        for l in open(f"{ROOT}/aligned/{unique_id}/Log.final.out"):
-            if "Uniquely mapped reads number" in l:
-                star = l.split("|")[1].strip()
-    except:
-        pass
-    
-    out.write(f"{line}\t{umi_ext}\t{umi_trim}\t{star}\n")
-
-out.close()
-print(f"Done: {output_tsv}")
+    uid = line.split("\t")[0]
+    fastp = grab(f"{root}/logs/fastp/{uid}_trim.log", "total reads") + ["NA", "NA"]
+    star = grab(f"{root}/aligned/{uid}/Log.final.out", "Uniquely mapped reads number") + ["NA"]
+    fout.write(f"{line}\t{fastp[0]}\t{fastp[1]}\t{star[0]}\n")

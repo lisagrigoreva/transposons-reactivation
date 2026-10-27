@@ -20,8 +20,9 @@ rule umi_dedup:
     threads: 5
     resources:
         mem_mb=64000,
-        runtime=1440,
-        slurm_partition="m"
+        runtime=2440,
+        slurm_partition="m",
+        qos="m_long",
     shell:
         """
         ml build-env/f2021
@@ -53,8 +54,10 @@ rule index_dedup_bam:
         os.path.join(config["outdir"], "logs", "samtools", "{sample}_dedup_index.log")
     threads: 2
     resources:
-        mem_mb=4000,
-        time="0:30:00"
+        mem_mb = 50000,
+        runtime = 1040,
+        slurm_partition="m",
+        qos="m_long",
     shell:
         """
         ml build-env/f2022
@@ -80,8 +83,10 @@ rule filter_transcriptome_bam:
         os.path.join(config["outdir"], "logs", "filter_transcriptome", "{sample}.log")
     threads: 4
     resources:
-        mem_mb=10000,
-        time="1:00:00"
+        mem_mb = 50000,
+        runtime = 1040,
+        slurm_partition="m",
+        qos="m_long",
     shell:
         """
         ml build-env/f2022

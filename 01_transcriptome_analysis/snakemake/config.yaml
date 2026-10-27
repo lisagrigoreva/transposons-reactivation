@@ -23,7 +23,7 @@ qualified_quality_phred: 20
 unqualified_percent_limit: 20
 
 # Reference genome indices 
-star_index: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/star_indixies_tari10_te_flipped"
+star_index: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/star_index"
 rsem_index: "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/rsem_index_with_opposite_orientation_te_col0/TAIR10_chr_all"
 
 # STAR parameters (ADD THESE)
