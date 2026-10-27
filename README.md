@@ -1,4 +1,4 @@
-### Transcriptome Analysis of F1 *Arabidopsis thaliana* Crosses
+## Transcriptome Analysis of F1 *Arabidopsis thaliana* Crosses
 
 This repository contains automated Snakemake pipelines for processing 3′ QuantSeq RNA-seq data from F1 *Arabidopsis thaliana* crosses. The workflow handles the processing from raw compressed sequencing archives to gene- and transposable element (TE)-level count matrices.
 
