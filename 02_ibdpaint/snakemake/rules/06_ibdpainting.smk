@@ -25,10 +25,10 @@ rule ibdpainting:
     benchmark:
         f"{OUT}/benchmarks/ibdpainting/{{sample}}.tsv",
     resources:
-        mem_mb = 50000,
-        runtime = 1040,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 30000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         """
         {params.env_cmd}

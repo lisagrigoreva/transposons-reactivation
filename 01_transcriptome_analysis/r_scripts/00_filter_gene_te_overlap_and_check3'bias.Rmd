@@ -1,0 +1,67 @@
+---
+title: "filter_gene_overlap"
+output: html_document
+date: "2026-10-25"
+---
+
+```{r setup, include=FALSE}
+library(GenomicRanges)
+```
+
+```{r}
+# Create protein-coding gene IDs (the GTF can't tell them apart from TE genes, the original GFF can)
+gff <- readLines("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff")
+pcg_ids <- sub(".*ID=([^;]+).*", "\\1", grep("\tgene\t.*protein_coding_gene", gff, value = TRUE))
+# Read gtf
+gtf <- read.delim("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_TE_genes_synthetic_with_OP_direction.gtf", header = FALSE, comment.char = "#", quote = "")
+gtf <- gtf[gtf$V3 == "transcript", ]
+gtf$gene_id <- sub('.*gene_id "([^"]+)".*', "\\1", gtf$V9)
+```
+
+```{r}
+# Subset protein-coding genes and TEs (sense + _OP)
+genes <- gtf[gtf$gene_id %in% pcg_ids, ]
+tes   <- gtf[grepl("^AT[1-5]TE", gtf$gene_id), ]
+
+te_gr   <- GRanges(tes$V1,   IRanges(tes$V4,   tes$V5),   strand = tes$V7)
+gene_gr <- GRanges(genes$V1, IRanges(genes$V4, genes$V5), strand = genes$V7)
+TE_overlap <- unique(tes$gene_id[overlapsAny(te_gr, gene_gr)])
+
+# Save
+cat("protein-coding genes:", length(unique(genes$gene_id)),
+    "| TE features:", length(unique(tes$gene_id)),
+    "| TEs overlapping a gene:", length(TE_overlap), "\n")
+writeLines(TE_overlap, "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TE_overlap_PCG.txt")
+writeLines(unique(genes$gene_id), "/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/PCG_ids.txt")
+```
+## Visualize 3' 
+```{r}
+## Visualize 3' bias 
+library(GenomicAlignments)
+bam   <- "/scratch-cbe/users/elizaveta.grigoreva/ddm1_resilencing/processing/snakemake_run/aligned/294318_S5_1/Aligned.sortedByCoord.out.bam"
+genes <- read.delim("/groups/nordborg/projects/ddm1_resilencing/11_resources/ref_genome/TAIR10_GFF3_genes_transposons.gff", header = FALSE, comment.char = "#")
+genes <- genes[genes$V3 == "gene", ]
+
+aln      <- readGAlignments(bam)
+read_end <- resize(granges(aln), width = 1, fix = "end")
+
+# gene 3' ends
+end3     <- ifelse(genes$V7 == "+", genes$V5, genes$V4)
+gene_end <- GRanges(genes$V1, IRanges(end3, end3), strand = genes$V7)
+
+i  <- nearest(read_end, gene_end)          # same strand only
+ok <- !is.na(i)
+d  <- start(read_end[ok]) - start(gene_end[i[ok]])
+s  <- as.character(strand(read_end[ok]))
+d  <- ifelse(s == "+", d, -d)               # positive = past the gene end
+
+keep <- abs(d) <= 2000
+d <- d[keep]; s <- s[keep]
+
+par(mfrow = c(1, 2))
+hist(d[s == "+"], breaks = 200, main = "+ strand genes", xlab = "bp from 3' end")
+hist(d[s == "-"], breaks = 200, main = "- strand genes", xlab = "bp from 3' end")
+```
+
+
+

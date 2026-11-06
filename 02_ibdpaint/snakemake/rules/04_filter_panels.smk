@@ -17,10 +17,10 @@ rule filter_target_panel:
     params:
         bed = config["genic_regions_bed"],
     resources:
-        mem_mb = 50000,
-        runtime = 1440,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     threads: 1
     log:
         f"{OUT}/logs/ibdpainting/filter_target_panel.log",
@@ -55,10 +55,10 @@ rule filter_reference_panel:
     params:
         bed = config["genic_regions_bed"],
     resources:
-        mem_mb = 50000,
-        runtime = 1440,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     threads: 1
     log:
         f"{OUT}/logs/ibdpainting/filter_reference_panel.log",

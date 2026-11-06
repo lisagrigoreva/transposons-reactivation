@@ -14,8 +14,10 @@ rule star_align:
         os.path.join(config["outdir"], "logs", "star", "{sample}.log")
     threads: 8
     resources:
-        mem_mb = 60000,
-        runtime = 340
+        mem_mb          = lambda wc, attempt: 40000 if attempt == 1 else 200000,
+        runtime         = lambda wc, attempt: 480   if attempt == 1 else 2840,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_medium" if attempt == 1 else "m_long",
     shell:
         """
         ml build-env/f2022
@@ -33,15 +35,17 @@ rule star_align:
             --outFileNamePrefix {params.prefix} \
             --alignEndsType EndToEnd \
             --alignIntronMin 20 \
-            --alignIntronMax 1000000 \
+            --alignIntronMax 6000 \
             --alignSJoverhangMin 8 \
             --alignSJDBoverhangMin 5 \
             --outFilterType BySJout \
-            --outFilterIntronMotifs RemoveNoncanonicalUnannotated \
+            --outFilterIntronMotifs RemoveNoncanonical \
             --outFilterMismatchNoverLmax 0.1 \
-            --outFilterScoreMinOverLread 0.4 \
-            --outFilterMatchNminOverLread 0.4 \
+            --outFilterScoreMinOverLread 0.6 \
+            --outFilterMatchNminOverLread 0.6 \
             --outFilterMultimapNmax 100 \
+            --outMultimapperOrder Random \
+            --runRNGseed 42 \
             --winAnchorMultimapNmax 200 \
             --outSAMattributes NH HI AS nM NM MD jM jI XS \
             --outSAMtype BAM SortedByCoordinate \

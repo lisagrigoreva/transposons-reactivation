@@ -24,10 +24,10 @@ rule make_targets:
     log:
         f"{OUT}/logs/ibdpainting/make_targets_{{chrom}}.log",
     resources:
-        mem_mb = 50000,
-        runtime = 1000,
-        slurm_partition = "m",
-        qos = "m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         r"""
         ml build-env/f2022
@@ -51,10 +51,10 @@ rule split_targets:
         n = NCHUNK,
         prefix = f"{OUT}/call_snps/chunks/targets_{{chrom}}.",
     resources:
-        mem_mb = 50000,
-        runtime = 1000,
-        slurm_partition = "m",
-        qos = "m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         r"""
         ml build-env/f2022
@@ -95,12 +95,12 @@ rule call_snps_chunk:
         min_mq = config.get("min_MQ", 20),
     log:
         f"{OUT}/logs/ibdpainting/call_snps_{{chrom}}.{{chunk}}.log",
-    threads: 2
+    threads: 10
     resources:
-        mem_mb = 50000,
-        runtime = 1000,
-        slurm_partition = "m",
-        qos = "m_long",   # adjust to a QoS that exists on your cluster
+        mem_mb          = lambda wc, attempt: 30000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         r"""
         ml build-env/f2022
@@ -144,12 +144,12 @@ rule call_snps:
         tbi = f"{OUT}/call_snps/{PROJECT}_snp_matrix_{{chrom}}.vcf.gz.tbi",
     log:
         f"{OUT}/logs/ibdpainting/concat_{{chrom}}.log",
-    threads: 4
+    threads: 10
     resources:
-        mem_mb = 50000,
-        runtime = 1000,
-        slurm_partition = "m",
-        qos = "m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         r"""
         ml build-env/f2022

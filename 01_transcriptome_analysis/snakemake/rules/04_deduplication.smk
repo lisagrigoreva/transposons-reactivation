@@ -17,12 +17,12 @@ rule umi_dedup:
         sep = "_"
     log:
         os.path.join(config["outdir"], "logs", "umi_tools", "{sample}_dedup.log")
-    threads: 5
+    threads: 20
     resources:
-        mem_mb=64000,
-        runtime=2440,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 30000 if attempt == 1 else 200000,
+        runtime         = lambda wc, attempt: 720   if attempt == 1 else 2840,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_medium" if attempt == 1 else "m_long",
     shell:
         """
         ml build-env/f2021
@@ -52,12 +52,12 @@ rule index_dedup_bam:
         os.path.join(config["outdir"], "dedup", "{sample}.dedup.bam.bai")
     log:
         os.path.join(config["outdir"], "logs", "samtools", "{sample}_dedup_index.log")
-    threads: 2
+    threads: 10
     resources:
-        mem_mb = 50000,
-        runtime = 1040,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 30000 if attempt == 1 else 200000,
+        runtime         = lambda wc, attempt: 720   if attempt == 1 else 2840,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_medium" if attempt == 1 else "m_long",
     shell:
         """
         ml build-env/f2022
@@ -81,12 +81,12 @@ rule filter_transcriptome_bam:
         ids = lambda w: os.path.join(config["outdir"], "dedup", w.sample + ".read_ids.tmp")
     log:
         os.path.join(config["outdir"], "logs", "filter_transcriptome", "{sample}.log")
-    threads: 4
+    threads: 10
     resources:
-        mem_mb = 50000,
-        runtime = 1040,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 30000 if attempt == 1 else 200000,
+        runtime         = lambda wc, attempt: 720   if attempt == 1 else 2840,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_medium" if attempt == 1 else "m_long",
     shell:
         """
         ml build-env/f2022

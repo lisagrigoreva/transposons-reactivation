@@ -30,10 +30,12 @@ rule umi_extract:
         r1_umi = os.path.join(config["outdir"], "umi_extracted", "{sample}.fastq.gz")
     log:
         os.path.join(config["outdir"], "logs", "umi_tools", "{sample}_extract.log")
-    threads: 2
+    threads: 5
     resources:
-        mem_mb=8000,
-        time="4:00:00"
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 200000,
+        runtime         = lambda wc, attempt: 420   if attempt == 1 else 2840,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_medium" if attempt == 1 else "m_long",
     shell:
         """
 	ml build-env/f2021
@@ -66,10 +68,12 @@ rule umi_trim:
         os.path.join(config["outdir"], "umi_trimmed", "{sample}.fastq.gz")
     log:
         os.path.join(config["outdir"], "logs", "fastp", "{sample}_trim.log")
-    threads: 4
+    threads: 5
     resources:
-        mem_mb=12000,
-        time="6:00:00"
+        mem_mb          = lambda wc, attempt: 40000 if attempt == 1 else 200000,
+        runtime         = lambda wc, attempt: 420   if attempt == 1 else 2840,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_medium" if attempt == 1 else "m_long",
     shell:
         """
         ml build-env/f2022

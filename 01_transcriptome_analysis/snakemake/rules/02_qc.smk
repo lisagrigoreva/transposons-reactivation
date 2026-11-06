@@ -43,12 +43,7 @@ rule multiqc_trimming:
     input:
         fastqc = lambda w: expand(
             os.path.join(config["outdir"], "qc", "fastqc_trimmed", "{sample}_fastqc.zip"),
-            sample=get_all_samples()
-        ),
-        fastp = lambda w: expand(
-            os.path.join(config["outdir"], "logs", "fastp", "{sample}_trim.json"),
-            sample=get_all_samples()
-        )
+            sample=get_all_samples())
     output:
         os.path.join(config["outdir"], "multiqc_trimming", "multiqc_trimming_report.html")
     log:

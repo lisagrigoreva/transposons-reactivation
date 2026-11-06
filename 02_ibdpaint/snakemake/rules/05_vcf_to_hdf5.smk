@@ -15,10 +15,10 @@ rule convert_reference_to_hdf5:
     benchmark:
         f"{OUT}/benchmarks/convert_reference_to_hdf5.tsv",
     resources:
-        mem_mb = 50000,
-        runtime = 1440,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         """
         {params.env_cmd}
@@ -45,10 +45,10 @@ rule vcf_to_hdf5:
     benchmark:
         f"{OUT}/benchmarks/vcf_to_hdf5.tsv",
     resources:
-        mem_mb = 50000,
-        runtime = 1440,
-        slurm_partition="m",
-        qos="m_long",
+        mem_mb          = lambda wc, attempt: 50000 if attempt == 1 else 50000,
+        runtime         = lambda wc, attempt: 220   if attempt == 1 else 1040,
+        slurm_partition = lambda wc, attempt: "c"   if attempt == 1 else "m",
+        qos             = lambda wc, attempt: "c_short" if attempt == 1 else "m_long",
     shell:
         """
         {params.env_cmd}
